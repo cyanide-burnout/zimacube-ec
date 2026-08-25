@@ -1,0 +1,25 @@
+# kernel build artifacts
+*.o
+*.o.*
+*.ko
+*.ko.*
+*.mod
+*.mod.c
+*.symvers
+*.order
+.*.cmd
+.tmp_versions/
+modules.order
+Module.symvers
+
+# firmware images and anything derived from them are not redistributed here
+artifacts/
+*.bin
+*.efi
+*.aml
+*.dsl
+*.asm
+*.ifr.txt
+*.ifr.txt.gz
+
+.DS_Store

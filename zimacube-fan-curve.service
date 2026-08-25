@@ -1,0 +1,13 @@
+[Unit]
+Description=Apply ZimaCube EC fan curve
+After=systemd-modules-load.service
+Requires=systemd-modules-load.service
+ConditionPathExists=/etc/zimacube-fan-curve.conf
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/zimacube-apply-fan-curve
+
+[Install]
+WantedBy=multi-user.target
