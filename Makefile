@@ -42,6 +42,9 @@ dkms: check-version install-support
 	install -D -m 0644 Makefile          $(SRCDIR)/Makefile
 	install -D -m 0644 dkms.conf         $(SRCDIR)/dkms.conf
 	@dkms status -m $(NAME) -v $(VERSION) | grep -q . || dkms add -m $(NAME) -v $(VERSION)
+	# build --force is required: install --force alone reinstalls the cached
+	# object and silently skips compiling an edited source
+	dkms build   -m $(NAME) -v $(VERSION) --force
 	dkms install -m $(NAME) -v $(VERSION) --force
 	@echo
 	@echo "Then: make reload   (and enable zimacube-fan-curve if you want the curve applied at boot)"
