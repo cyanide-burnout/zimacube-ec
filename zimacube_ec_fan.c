@@ -30,7 +30,7 @@
  * quiet down. Compensate with a steeper slope, not a lower start temperature.
  */
 
-#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
+#define pr_fmt(fmt)  KBUILD_MODNAME ": " fmt
 
 #include <linux/acpi.h>
 #include <linux/debugfs.h>
@@ -48,55 +48,55 @@
 #include <linux/uaccess.h>
 #include <linux/platform_device.h>
 
-#define DRVNAME			"zimacube_ec_fan"
+#define DRVNAME  "zimacube_ec_fan"
 
 /* ---- Super I/O (chip detection + indirect register window) ---------------- */
-#define SIO_ADDR		0x4e
-#define SIO_DATA		0x4f
-#define IT5570_CHIPID		0x5570
+#define SIO_ADDR       0x4e
+#define SIO_DATA       0x4f
+#define IT5570_CHIPID  0x5570
 
 /* ITE indirect memory access: SIO cfg reg 0x2e selects a sub-register, 0x2f is data */
-#define SIO_IMA_SELECT		0x2e
-#define SIO_IMA_DATA		0x2f
-#define SIO_IMA_ADDR_LO		0x10
-#define SIO_IMA_ADDR_HI		0x11
-#define SIO_IMA_XFER		0x12
+#define SIO_IMA_SELECT   0x2e
+#define SIO_IMA_DATA     0x2f
+#define SIO_IMA_ADDR_LO  0x10
+#define SIO_IMA_ADDR_HI  0x11
+#define SIO_IMA_XFER     0x12
 
 /* ---- ACPI EC register window, ports 0x62/0x66 ---------------------------- */
-#define EC_SYS_FAN_MODE		0x22	/* 0=off 1=manual 2=auto 3=full     */
-#define EC_CPU_FAN_MODE		0x23
-#define EC_SYS_SLOPE		0x24	/* duty units per degC              */
-#define EC_SYS_START_PWM	0x25	/* 0..122                          */
-#define EC_SYS_START_TEMP	0x26	/* degC                            */
-#define EC_SYS_FULL_TEMP	0x27	/* degC                            */
-#define EC_CPU_SLOPE		0x28
-#define EC_CPU_START_PWM	0x29
-#define EC_CPU_START_TEMP	0x2a
-#define EC_CPU_FULL_TEMP	0x2b
-#define EC_SYS_MANUAL_PWM	0x2c	/* 0..122                          */
-#define EC_CPU_MANUAL_PWM	0x2d
-#define EC_TEMP_CTRL		0x70	/* CPU package temp, drives curves */
-#define EC_TEMP_MAX		0x71	/* max(0x70, 0x72)                 */
-#define EC_TEMP_BOARD		0x72	/* board/aux thermistor            */
-#define EC_CPU_RPM_HI		0x76	/* big-endian 16-bit, already RPM  */
-#define EC_CPU_RPM_LO		0x77
-#define EC_SYS_RPM_HI		0x78
-#define EC_SYS_RPM_LO		0x79
-#define EC_CPU_TEMP10_LO	0xa1	/* little-endian 16-bit, degC * 10  */
-#define EC_CPU_TEMP10_HI	0xa2
+#define EC_SYS_FAN_MODE    0x22  /* 0=off 1=manual 2=auto 3=full */
+#define EC_CPU_FAN_MODE    0x23
+#define EC_SYS_SLOPE       0x24  /* duty units per degC */
+#define EC_SYS_START_PWM   0x25  /* 0..122 */
+#define EC_SYS_START_TEMP  0x26  /* degC */
+#define EC_SYS_FULL_TEMP   0x27  /* degC */
+#define EC_CPU_SLOPE       0x28
+#define EC_CPU_START_PWM   0x29
+#define EC_CPU_START_TEMP  0x2a
+#define EC_CPU_FULL_TEMP   0x2b
+#define EC_SYS_MANUAL_PWM  0x2c  /* 0..122 */
+#define EC_CPU_MANUAL_PWM  0x2d
+#define EC_TEMP_CTRL       0x70  /* CPU package temp, drives curves */
+#define EC_TEMP_MAX        0x71  /* max(0x70, 0x72) */
+#define EC_TEMP_BOARD      0x72  /* board/aux thermistor */
+#define EC_CPU_RPM_HI      0x76  /* big-endian 16-bit, already RPM */
+#define EC_CPU_RPM_LO      0x77
+#define EC_SYS_RPM_HI      0x78
+#define EC_SYS_RPM_LO      0x79
+#define EC_CPU_TEMP10_LO   0xa1  /* little-endian 16-bit, degC * 10 */
+#define EC_CPU_TEMP10_HI   0xa2
 
 /*
  * Live PWM duty, reachable only through the Super I/O indirect window: the
  * controller does not mirror it into the ACPI EC space.
  */
-#define REG_PWM_SYS_DUTY	0x1803
-#define REG_PWM_CPU_DUTY	0x1809
+#define REG_PWM_SYS_DUTY  0x1803
+#define REG_PWM_CPU_DUTY  0x1809
 
 /* EC firmware fan modes */
-#define FAN_MODE_OFF		0
-#define FAN_MODE_MANUAL		1
-#define FAN_MODE_AUTO		2
-#define FAN_MODE_FULL		3
+#define FAN_MODE_OFF     0
+#define FAN_MODE_MANUAL  1
+#define FAN_MODE_AUTO    2
+#define FAN_MODE_FULL    3
 /* mode 4 exists in BIOS Setup but the controller does not decode it — never write it */
 
 /*
@@ -106,57 +106,69 @@
  * scale is a plain 8-bit 0..255 and 122 is a UI limit only -- which means Linux
  * can command duties, start PWMs and slopes that BIOS Setup cannot express.
  */
-#define EC_PWM_SCALE		255	/* duty register full scale */
-#define EC_BIOS_PWM_CAP		122	/* what BIOS Setup allows */
-#define HWMON_PWM_MAX		255
+#define EC_PWM_SCALE     255  /* duty register full scale */
+#define EC_BIOS_PWM_CAP  122  /* what BIOS Setup allows */
+#define HWMON_PWM_MAX    255
 
-#define CACHE_TTL		(HZ / 2)
+#define CACHE_TTL  (HZ / 2)
 
-struct chan_regs {
-	u8 mode, slope, start_pwm, start_temp, full_temp, manual_pwm;
-	u8 rpm_hi, rpm_lo;
-	u16 duty_reg;
-	const char *label;
+struct chan_regs
+{
+  u8 mode, slope, start_pwm, start_temp, full_temp, manual_pwm;
+  u8 rpm_hi, rpm_lo;
+  u16 duty_reg;
+  const char *label;
 };
 
-static const struct chan_regs chan[2] = {
-	[0] = {	/* CPU fan */
-		.mode = EC_CPU_FAN_MODE,   .slope = EC_CPU_SLOPE,
-		.start_pwm = EC_CPU_START_PWM, .start_temp = EC_CPU_START_TEMP,
-		.full_temp = EC_CPU_FULL_TEMP, .manual_pwm = EC_CPU_MANUAL_PWM,
-		.rpm_hi = EC_CPU_RPM_HI,   .rpm_lo = EC_CPU_RPM_LO,
-		.duty_reg = REG_PWM_CPU_DUTY,
-		.label = "CPU Fan",
-	},
-	[1] = {	/* System fan */
-		.mode = EC_SYS_FAN_MODE,   .slope = EC_SYS_SLOPE,
-		.start_pwm = EC_SYS_START_PWM, .start_temp = EC_SYS_START_TEMP,
-		.full_temp = EC_SYS_FULL_TEMP, .manual_pwm = EC_SYS_MANUAL_PWM,
-		.rpm_hi = EC_SYS_RPM_HI,   .rpm_lo = EC_SYS_RPM_LO,
-		.duty_reg = REG_PWM_SYS_DUTY,
-		.label = "System Fan",
-	},
+static const struct chan_regs channels[2] =
+{
+  [0] =
+  {  /* CPU fan */
+    .mode       = EC_CPU_FAN_MODE,
+    .slope      = EC_CPU_SLOPE,
+    .start_pwm  = EC_CPU_START_PWM,
+    .start_temp = EC_CPU_START_TEMP,
+    .full_temp  = EC_CPU_FULL_TEMP,
+    .manual_pwm = EC_CPU_MANUAL_PWM,
+    .rpm_hi     = EC_CPU_RPM_HI,
+    .rpm_lo     = EC_CPU_RPM_LO,
+    .duty_reg   = REG_PWM_CPU_DUTY,
+    .label      = "CPU Fan",
+  },
+  [1] =
+  {  /* System fan */
+    .mode       = EC_SYS_FAN_MODE,
+    .slope      = EC_SYS_SLOPE,
+    .start_pwm  = EC_SYS_START_PWM,
+    .start_temp = EC_SYS_START_TEMP,
+    .full_temp  = EC_SYS_FULL_TEMP,
+    .manual_pwm = EC_SYS_MANUAL_PWM,
+    .rpm_hi     = EC_SYS_RPM_HI,
+    .rpm_lo     = EC_SYS_RPM_LO,
+    .duty_reg   = REG_PWM_SYS_DUTY,
+    .label      = "System Fan",
+  },
 };
 
-struct zc_data {
-	struct mutex lock;		/* serialises EC + SIO access */
-	u8  mode_at_probe[2];		/* restored on unload */
-	bool mode_saved;
-	unsigned long updated;
-	bool valid;
+struct zc_data
+{
+  struct mutex lock;     /* serialises EC + SIO access */
+  u8  mode_at_probe[2];  /* restored on unload */
+  bool mode_saved;
+  unsigned long updated;
+  bool valid;
 
-	u16 rpm[2];
-	u8  mode[2];
-	u8  duty[2];			/* 0..EC_PWM_SCALE, derived from hardware */
-	u8  fullscale;			/* duty value meaning 100 %, 0 if unknown */
-	u8  temp_ctrl, temp_max, temp_board;
-	u16 temp_cpu10;
+  u16 speeds[2];
+  u8  mode[2];
+  u8  duty[2];     /* 0..EC_PWM_SCALE, derived from hardware */
+  u8  full_scale;  /* duty value meaning 100 %, 0 if unknown */
+  u8  temp_ctrl, temp_max, temp_board;
+  u16 temp_cpu10;
 };
 
 static bool force;
 module_param(force, bool, 0444);
-MODULE_PARM_DESC(force,
-	"Bind even if the DMI data does not match a known-good board. The EC RAM layout this driver writes is board-specific: a different IT5570 machine will have a different map, so forcing can drive the fans to an arbitrary duty. Only set this if you have verified the layout yourself.");
+MODULE_PARM_DESC(force, "Bind even if the DMI data does not match a known-good board. The EC RAM layout this driver writes is board-specific: a different IT5570 machine will have a different map, so forcing can drive the fans to an arbitrary duty. Only set this if you have verified the layout yourself.");
 
 static bool sio_ima_ok = true;
 module_param_named(sio_ima, sio_ima_ok, bool, 0444);
@@ -164,71 +176,70 @@ MODULE_PARM_DESC(sio_ima, "Use the Super I/O indirect window to read live PWM du
 
 static unsigned int fullscale = EC_PWM_SCALE;
 module_param(fullscale, uint, 0644);
-MODULE_PARM_DESC(fullscale,
-	"PWM duty register value that means 100% (default 255, measured via Full Speed mode). Set to 122 to stay inside the range BIOS Setup uses.");
+MODULE_PARM_DESC(fullscale, "PWM duty register value that means 100% (default 255, measured via Full Speed mode). Set to 122 to stay inside the range BIOS Setup uses.");
 
 /* ------------------------------------------------------------------ Super I/O */
 
 static void sio_enter(void)
 {
-	outb(0x87, SIO_ADDR);
-	outb(0x01, SIO_ADDR);
-	outb(0x55, SIO_ADDR);
-	outb(0xaa, SIO_ADDR);
+  outb(0x87, SIO_ADDR);
+  outb(0x01, SIO_ADDR);
+  outb(0x55, SIO_ADDR);
+  outb(0xaa, SIO_ADDR);
 }
 
 static void sio_leave(void)
 {
-	outb(0x02, SIO_ADDR);
-	outb(0x02, SIO_DATA);
+  outb(0x02, SIO_ADDR);
+  outb(0x02, SIO_DATA);
 }
 
 static u8 sio_inb(u8 reg)
 {
-	outb(reg, SIO_ADDR);
-	return inb(SIO_DATA);
+  outb(reg, SIO_ADDR);
+  return inb(SIO_DATA);
 }
 
-static void sio_outb(u8 reg, u8 val)
+static void sio_outb(u8 reg, u8 value)
 {
-	outb(reg, SIO_ADDR);
-	outb(val, SIO_DATA);
+  outb(reg, SIO_ADDR);
+  outb(value, SIO_DATA);
 }
 
 /*
  * Read one byte through the ITE indirect memory-access window. Must be called
  * with sio_enter() already done and the 0x4e/0x4f region held.
  */
-static u8 sio_ind_read(u16 addr)
+static u8 sio_ind_read(u16 address)
 {
-	sio_outb(SIO_IMA_SELECT, SIO_IMA_ADDR_HI);
-	sio_outb(SIO_IMA_DATA, addr >> 8);
-	sio_outb(SIO_IMA_SELECT, SIO_IMA_ADDR_LO);
-	sio_outb(SIO_IMA_DATA, addr & 0xff);
-	sio_outb(SIO_IMA_SELECT, SIO_IMA_XFER);
-	/* select the data sub-register, then read it (outb takes value, port) */
-	outb(SIO_IMA_DATA, SIO_ADDR);
-	return inb(SIO_DATA);
+  sio_outb(SIO_IMA_SELECT, SIO_IMA_ADDR_HI);
+  sio_outb(SIO_IMA_DATA, address >> 8);
+  sio_outb(SIO_IMA_SELECT, SIO_IMA_ADDR_LO);
+  sio_outb(SIO_IMA_DATA, address & 0xff);
+  sio_outb(SIO_IMA_SELECT, SIO_IMA_XFER);
+  /* select the data sub-register, then read it (outb takes value, port) */
+  outb(SIO_IMA_DATA, SIO_ADDR);
+  return inb(SIO_DATA);
 }
 
 /* Read a batch of indirect-window addresses in one Super I/O session. */
-static int sio_ind_read_batch(const u16 *addr, u8 *out, int n)
+static int sio_ind_read_batch(const u16 *addresses, u8 *out, int count)
 {
-	int i;
+  int index;
 
-	if (!sio_ima_ok)
-		return -ENODEV;
+  if (!sio_ima_ok)
+    return -ENODEV;
 
-	if (!request_muxed_region(SIO_ADDR, 2, DRVNAME))
-		return -EBUSY;
+  if (!request_muxed_region(SIO_ADDR, 2, DRVNAME))
+    return -EBUSY;
 
-	sio_enter();
-	for (i = 0; i < n; i++)
-		out[i] = sio_ind_read(addr[i]);
-	sio_leave();
+  sio_enter();
+  for (index = 0; index < count; index++)
+    out[index] = sio_ind_read(addresses[index]);
+  sio_leave();
 
-	release_region(SIO_ADDR, 2);
-	return 0;
+  release_region(SIO_ADDR, 2);
+  return 0;
 }
 
 /*
@@ -237,386 +248,436 @@ static int sio_ind_read_batch(const u16 *addr, u8 *out, int n)
  * The duty registers are on the same 0..fullscale scale the EC applies to the
  * BIOS values, so no rescaling is done here.
  */
-static int read_live_duty(struct zc_data *d)
+static int read_live_duty(struct zc_data *state)
 {
-	static const u16 addr[2] = { REG_PWM_CPU_DUTY, REG_PWM_SYS_DUTY };
-	u8 v[2];
-	unsigned int fs = fullscale ? fullscale : EC_PWM_SCALE;
-	int ret, i;
+  static const u16 addresses[2] = { REG_PWM_CPU_DUTY, REG_PWM_SYS_DUTY };
+  unsigned int full_scale       = fullscale ? fullscale : EC_PWM_SCALE;
+  int result, index;
+  u8 duties[2];
 
-	ret = sio_ind_read_batch(addr, v, 2);
-	if (ret)
-		return ret;
+  result = sio_ind_read_batch(addresses, duties, 2);
+  if (result)
+    return result;
 
-	d->fullscale = fs;
-	for (i = 0; i < 2; i++)
-		d->duty[i] = min_t(unsigned int, v[i], fs);
-	return 0;
+  state->full_scale = full_scale;
+  for (index = 0; index < 2; index++)
+    state->duty[index] = min_t(unsigned int, duties[index], full_scale);
+  return 0;
 }
 
-static int sio_chipid(u16 *id)
+static int sio_chipid(u16 *chip_id)
 {
-	if (!request_muxed_region(SIO_ADDR, 2, DRVNAME))
-		return -EBUSY;
+  if (!request_muxed_region(SIO_ADDR, 2, DRVNAME))
+    return -EBUSY;
 
-	sio_enter();
-	*id = (sio_inb(0x20) << 8) | sio_inb(0x21);
-	sio_leave();
+  sio_enter();
+  *chip_id = (sio_inb(0x20) << 8) | sio_inb(0x21);
+  sio_leave();
 
-	release_region(SIO_ADDR, 2);
-	return 0;
+  release_region(SIO_ADDR, 2);
+  return 0;
 }
 
 /* ----------------------------------------------------------------- EC access */
 
-static int ec_r(u8 off, u8 *val)
+static int read_ec_reg(u8 offset, u8 *value)
 {
-	return ec_read(off, val);
+  return ec_read(offset, value);
 }
 
-static int ec_w(u8 off, u8 val)
+static int write_ec_reg(u8 offset, u8 value)
 {
-	return ec_write(off, val);
+  return ec_write(offset, value);
 }
 
-static int ec_r16be(u8 hi_off, u16 *val)
+static int read_ec_reg16(u8 high_offset, u16 *value)
 {
-	u8 hi, lo;
-	int ret;
+  u8 high, low;
+  int result;
 
-	ret = ec_r(hi_off, &hi);
-	if (ret)
-		return ret;
-	ret = ec_r(hi_off + 1, &lo);
-	if (ret)
-		return ret;
-	*val = (hi << 8) | lo;
-	return 0;
+  result = read_ec_reg(high_offset, &high);
+  if (result)
+    return result;
+  result = read_ec_reg(high_offset + 1, &low);
+  if (result)
+    return result;
+  *value = (high << 8) | low;
+  return 0;
 }
 
-static int zc_update(struct zc_data *d)
+static int zc_update(struct zc_data *state)
 {
-	int i, ret = 0;
-	u8 lo, hi;
+  int index, result = 0;
+  u8 low, high;
 
-	mutex_lock(&d->lock);
-	if (d->valid && time_before(jiffies, d->updated + CACHE_TTL))
-		goto out;
+  mutex_lock(&state->lock);
+  if ((state->valid) && time_before(jiffies, state->updated + CACHE_TTL))
+    goto out;
 
-	for (i = 0; i < 2; i++) {
-		ret = ec_r16be(chan[i].rpm_hi, &d->rpm[i]);
-		if (ret)
-			goto out;
-		ret = ec_r(chan[i].mode, &d->mode[i]);
-		if (ret)
-			goto out;
-	}
+  for (index = 0; index < 2; index++)
+  {
+    result = read_ec_reg16(channels[index].rpm_hi, &state->speeds[index]);
+    if (result)
+      goto out;
+    result = read_ec_reg(channels[index].mode, &state->mode[index]);
+    if (result)
+      goto out;
+  }
 
-	ret = ec_r(EC_TEMP_CTRL, &d->temp_ctrl);
-	if (ret)
-		goto out;
-	ret = ec_r(EC_TEMP_MAX, &d->temp_max);
-	if (ret)
-		goto out;
-	ret = ec_r(EC_TEMP_BOARD, &d->temp_board);
-	if (ret)
-		goto out;
+  result = read_ec_reg(EC_TEMP_CTRL, &state->temp_ctrl);
+  if (result)
+    goto out;
+  result = read_ec_reg(EC_TEMP_MAX, &state->temp_max);
+  if (result)
+    goto out;
+  result = read_ec_reg(EC_TEMP_BOARD, &state->temp_board);
+  if (result)
+    goto out;
 
-	/* CPU temperature in tenths of a degree — note: little-endian here, unlike RPM */
-	ret = ec_r(EC_CPU_TEMP10_LO, &lo);
-	if (ret)
-		goto out;
-	ret = ec_r(EC_CPU_TEMP10_HI, &hi);
-	if (ret)
-		goto out;
-	d->temp_cpu10 = (hi << 8) | lo;
+  /* CPU temperature in tenths of a degree — note: little-endian here, unlike RPM */
+  result = read_ec_reg(EC_CPU_TEMP10_LO, &low);
+  if (result)
+    goto out;
+  result = read_ec_reg(EC_CPU_TEMP10_HI, &high);
+  if (result)
+    goto out;
+  state->temp_cpu10 = (high << 8) | low;
 
-	if (read_live_duty(d)) {
-		/*
-		 * No indirect window: fall back to what we told the EC to do.
-		 * In auto mode we cannot know the duty, so report the configured
-		 * manual value only when the channel is actually in manual mode.
-		 */
-		d->fullscale = 0;
-		for (i = 0; i < 2; i++) {
-			u8 v = 0;
+  if (read_live_duty(state))
+  {
+    /*
+     * No indirect window: fall back to what we told the EC to do.
+     * In auto mode we cannot know the duty, so report the configured
+     * manual value only when the channel is actually in manual mode.
+     */
+    state->full_scale = 0;
+    for (index = 0; index < 2; index++)
+    {
+      u8 value = 0;
 
-			if (d->mode[i] == FAN_MODE_MANUAL)
-				ec_r(chan[i].manual_pwm, &v);
-			else if (d->mode[i] == FAN_MODE_FULL)
-				v = fullscale ? fullscale : EC_PWM_SCALE;
-			d->duty[i] = v;
-		}
-	}
+      if (state->mode[index] == FAN_MODE_MANUAL)
+        read_ec_reg(channels[index].manual_pwm, &value);
+      else if (state->mode[index] == FAN_MODE_FULL)
+        value = fullscale ? fullscale : EC_PWM_SCALE;
+      state->duty[index] = value;
+    }
+  }
 
-	d->updated = jiffies;
-	d->valid = true;
+  state->updated = jiffies;
+  state->valid = true;
 out:
-	mutex_unlock(&d->lock);
-	return ret;
+  mutex_unlock(&state->lock);
+  return result;
 }
 
-static inline long ec_to_hwmon_pwm(u8 ec)
+static inline long ec_to_hwmon_pwm(u8 duty)
 {
-	unsigned int fs = fullscale ? fullscale : EC_PWM_SCALE;
+  unsigned int full_scale = fullscale ? fullscale : EC_PWM_SCALE;
 
-	return DIV_ROUND_CLOSEST(min_t(unsigned int, ec, fs) * HWMON_PWM_MAX, fs);
+  return DIV_ROUND_CLOSEST(min_t(unsigned int, duty, full_scale) * HWMON_PWM_MAX,
+                           full_scale);
 }
 
 static inline u8 hwmon_to_ec_pwm(long pwm)
 {
-	unsigned int fs = fullscale ? fullscale : EC_PWM_SCALE;
+  unsigned int full_scale = fullscale ? fullscale : EC_PWM_SCALE;
 
-	pwm = clamp_val(pwm, 0, HWMON_PWM_MAX);
-	return DIV_ROUND_CLOSEST(pwm * fs, HWMON_PWM_MAX);
+  pwm = clamp_val(pwm, 0, HWMON_PWM_MAX);
+  return DIV_ROUND_CLOSEST(pwm * full_scale, HWMON_PWM_MAX);
 }
 
 /* -------------------------------------------------------------------- hwmon */
 
 static umode_t zc_is_visible(const void *drvdata, enum hwmon_sensor_types type,
-			     u32 attr, int channel)
+                             u32 attr, int channel)
 {
-	switch (type) {
-	case hwmon_fan:
-		return 0444;
-	case hwmon_temp:
-		return 0444;
-	case hwmon_pwm:
-		switch (attr) {
-		case hwmon_pwm_input:
-		case hwmon_pwm_enable:
-		case hwmon_pwm_auto_channels_temp:
-			return 0644;
-		default:
-			return 0;
-		}
-	default:
-		return 0;
-	}
+  switch (type)
+  {
+    case hwmon_fan:
+      return 0444;
+    case hwmon_temp:
+      return 0444;
+    case hwmon_pwm:
+      switch (attr)
+      {
+        case hwmon_pwm_input:
+        case hwmon_pwm_enable:
+        case hwmon_pwm_auto_channels_temp:
+          return 0644;
+        default:
+          return 0;
+      }
+    default:
+      return 0;
+  }
 }
 
 static int zc_read(struct device *dev, enum hwmon_sensor_types type, u32 attr,
-		   int channel, long *val)
+                   int channel, long *value)
 {
-	struct zc_data *d = dev_get_drvdata(dev);
-	int ret = zc_update(d);
+  struct zc_data *state = dev_get_drvdata(dev);
+  int result = zc_update(state);
 
-	if (ret)
-		return ret;
+  if (result)
+    return result;
 
-	switch (type) {
-	case hwmon_fan:
-		*val = d->rpm[channel];
-		return 0;
+  switch (type)
+  {
+    case hwmon_fan:
+      *value = state->speeds[channel];
+      return 0;
 
-	case hwmon_pwm:
-		switch (attr) {
-		case hwmon_pwm_input:
-			*val = ec_to_hwmon_pwm(d->duty[channel]);
-			return 0;
-		case hwmon_pwm_enable:
-			switch (d->mode[channel]) {
-			case FAN_MODE_MANUAL:	*val = 1; break;
-			case FAN_MODE_AUTO:	*val = 2; break;
-			case FAN_MODE_FULL:	*val = 0; break;
-			case FAN_MODE_OFF:	*val = 1; break;
-			default:
-				/*
-				 * BIOS "Silent" (4) is not decoded by the EC, so the
-				 * channel is effectively uncontrolled. Report that.
-				 */
-				*val = 0;
-				break;
-			}
-			return 0;
-		case hwmon_pwm_auto_channels_temp:
-			*val = 1;	/* both curves are driven by temp1 (EC 0x70) */
-			return 0;
-		default:
-			return -EOPNOTSUPP;
-		}
+    case hwmon_pwm:
+      switch (attr)
+      {
+        case hwmon_pwm_input:
+          *value = ec_to_hwmon_pwm(state->duty[channel]);
+          return 0;
+        case hwmon_pwm_enable:
+          switch (state->mode[channel])
+          {
+            case FAN_MODE_MANUAL:  *value = 1; break;
+            case FAN_MODE_AUTO:    *value = 2; break;
+            case FAN_MODE_FULL:    *value = 0; break;
+            case FAN_MODE_OFF:     *value = 1; break;
+            default:
+              /*
+               * Mode 4 is not decoded by
+               * the controller, so the
+               * channel is uncontrolled.
+               */
+              *value = 0;
+              break;
+          }
+          return 0;
+        case hwmon_pwm_auto_channels_temp:
+          /* both curves are driven by temp1 */
+          *value = 1;
+          return 0;
+        default:
+          return -EOPNOTSUPP;
+      }
 
-	case hwmon_temp:
-		switch (channel) {
-		case 0: *val = d->temp_cpu10 * 100; return 0;	/* decidegrees */
-		case 1: *val = d->temp_board * 1000; return 0;
-		case 2: *val = d->temp_max * 1000; return 0;
-		default: return -EOPNOTSUPP;
-		}
+    case hwmon_temp:
+      switch (channel)
+      {
+        case 0:
+          /* tenths of a degree, hwmon wants millidegrees */
+          *value = state->temp_cpu10 * 100;
+          return 0;
 
-	default:
-		return -EOPNOTSUPP;
-	}
+        case 1:
+          *value = state->temp_board * 1000;
+          return 0;
+
+        case 2:
+          *value = state->temp_max * 1000;
+          return 0;
+        default:  return -EOPNOTSUPP;
+      }
+
+    default:
+      return -EOPNOTSUPP;
+  }
 }
 
 static int zc_write(struct device *dev, enum hwmon_sensor_types type, u32 attr,
-		    int channel, long val)
+                    int channel, long value)
 {
-	struct zc_data *d = dev_get_drvdata(dev);
-	int ret;
+  const struct chan_regs *regs = &channels[channel];
+  struct zc_data *state = dev_get_drvdata(dev);
+  int result;
 
-	if (type != hwmon_pwm)
-		return -EOPNOTSUPP;
+  if (type != hwmon_pwm)
+    return -EOPNOTSUPP;
 
-	mutex_lock(&d->lock);
+  mutex_lock(&state->lock);
 
-	switch (attr) {
-	case hwmon_pwm_input: {
-		u8 ec = hwmon_to_ec_pwm(val);
+  switch (attr)
+  {
+    case hwmon_pwm_input:
+    {
+      u8 duty = hwmon_to_ec_pwm(value);
 
-		ret = ec_w(chan[channel].manual_pwm, ec);
-		if (!ret)
-			ret = ec_w(chan[channel].mode, FAN_MODE_MANUAL);
-		break;
-	}
-	case hwmon_pwm_enable:
-		switch (val) {
-		case 0:	/* no control: run flat out */
-			ret = ec_w(chan[channel].mode, FAN_MODE_FULL);
-			break;
-		case 1:	/* manual: freeze at the duty the fan is actually running at */
-			if (read_live_duty(d))
-				d->duty[channel] = d->valid ? d->duty[channel] : 60;
-			ret = ec_w(chan[channel].manual_pwm, d->duty[channel]);
-			if (!ret)
-				ret = ec_w(chan[channel].mode, FAN_MODE_MANUAL);
-			break;
-		case 2:	/* hand back to the EC's own curve */
-			ret = ec_w(chan[channel].mode, FAN_MODE_AUTO);
-			break;
-		default:
-			ret = -EINVAL;
-		}
-		break;
-	default:
-		ret = -EOPNOTSUPP;
-	}
+      result = write_ec_reg(regs->manual_pwm, duty);
+      if (!result)
+        result = write_ec_reg(regs->mode, FAN_MODE_MANUAL);
+      break;
+    }
 
-	if (!ret)
-		d->valid = false;
-	mutex_unlock(&d->lock);
-	return ret;
+    case hwmon_pwm_enable:
+      switch (value)
+      {
+        /* no control at all: run flat out */
+        case 0:
+          result = write_ec_reg(regs->mode, FAN_MODE_FULL);
+          break;
+
+        /* manual: freeze at the duty the fan runs at now */
+        case 1:
+          if (read_live_duty(state) && (!state->valid))
+            state->duty[channel] = 60;
+          result = write_ec_reg(regs->manual_pwm,
+                                state->duty[channel]);
+          if (!result)
+            result = write_ec_reg(regs->mode,
+                                  FAN_MODE_MANUAL);
+          break;
+
+        /* hand back to the controller's own curve */
+        case 2:
+          result = write_ec_reg(regs->mode, FAN_MODE_AUTO);
+          break;
+
+        default:
+          result = -EINVAL;
+      }
+      break;
+
+    default:
+      result = -EOPNOTSUPP;
+  }
+
+  if (!result)
+    state->valid = false;
+  mutex_unlock(&state->lock);
+  return result;
 }
 
 static int zc_read_string(struct device *dev, enum hwmon_sensor_types type,
-			  u32 attr, int channel, const char **str)
+                          u32 attr, int channel, const char **str)
 {
-	static const char * const temp_labels[] = { "CPU", "Board", "Max" };
+  static const char * const temp_labels[] = { "CPU", "Board", "Max" };
 
-	if (type == hwmon_fan && attr == hwmon_fan_label) {
-		*str = chan[channel].label;
-		return 0;
-	}
-	if (type == hwmon_temp && attr == hwmon_temp_label &&
-	    channel < ARRAY_SIZE(temp_labels)) {
-		*str = temp_labels[channel];
-		return 0;
-	}
-	return -EOPNOTSUPP;
+  bool labelled = (channel >= 0) && (channel < (int)ARRAY_SIZE(temp_labels));
+
+  if ((type == hwmon_fan) && (attr == hwmon_fan_label))
+  {
+    *str = channels[channel].label;
+    return 0;
+  }
+
+  if ((type == hwmon_temp) && (attr == hwmon_temp_label) && labelled)
+  {
+    *str = temp_labels[channel];
+    return 0;
+  }
+
+  return -EOPNOTSUPP;
 }
 
-static const struct hwmon_channel_info * const zc_info[] = {
-	HWMON_CHANNEL_INFO(fan,
-		HWMON_F_INPUT | HWMON_F_LABEL,
-		HWMON_F_INPUT | HWMON_F_LABEL),
-	HWMON_CHANNEL_INFO(pwm,
-		HWMON_PWM_INPUT | HWMON_PWM_ENABLE | HWMON_PWM_AUTO_CHANNELS_TEMP,
-		HWMON_PWM_INPUT | HWMON_PWM_ENABLE | HWMON_PWM_AUTO_CHANNELS_TEMP),
-	HWMON_CHANNEL_INFO(temp,
-		HWMON_T_INPUT | HWMON_T_LABEL,
-		HWMON_T_INPUT | HWMON_T_LABEL,
-		HWMON_T_INPUT | HWMON_T_LABEL),
-	NULL
+static const struct hwmon_channel_info * const zc_info[] =
+{
+  HWMON_CHANNEL_INFO(fan,
+                     HWMON_F_INPUT | HWMON_F_LABEL,
+                     HWMON_F_INPUT | HWMON_F_LABEL),
+  HWMON_CHANNEL_INFO(pwm,
+                     HWMON_PWM_INPUT | HWMON_PWM_ENABLE | HWMON_PWM_AUTO_CHANNELS_TEMP,
+                     HWMON_PWM_INPUT | HWMON_PWM_ENABLE | HWMON_PWM_AUTO_CHANNELS_TEMP),
+  HWMON_CHANNEL_INFO(temp,
+                     HWMON_T_INPUT | HWMON_T_LABEL,
+                     HWMON_T_INPUT | HWMON_T_LABEL,
+                     HWMON_T_INPUT | HWMON_T_LABEL),
+  NULL
 };
 
-static const struct hwmon_ops zc_ops = {
-	.is_visible	= zc_is_visible,
-	.read		= zc_read,
-	.read_string	= zc_read_string,
-	.write		= zc_write,
+static const struct hwmon_ops zc_ops =
+{
+  .is_visible  = zc_is_visible,
+  .read        = zc_read,
+  .read_string = zc_read_string,
+  .write       = zc_write,
 };
 
-static const struct hwmon_chip_info zc_chip_info = {
-	.ops	= &zc_ops,
-	.info	= zc_info,
+static const struct hwmon_chip_info zc_chip_info =
+{
+  .ops  = &zc_ops,
+  .info = zc_info,
 };
 
 /* ------------------------------------------- curve attributes (custom group) */
 
 static struct zc_data *attr_data(struct device *dev)
 {
-	return dev_get_drvdata(dev);
+  return dev_get_drvdata(dev);
 }
 
-static ssize_t curve_show(struct device *dev, struct device_attribute *da,
-			  char *buf)
+static ssize_t curve_show(struct device *dev, struct device_attribute *dev_attr,
+                          char *buf)
 {
-	struct sensor_device_attribute_2 *a = to_sensor_dev_attr_2(da);
-	struct zc_data *d = attr_data(dev);
-	u8 off, v;
-	int ret;
+  struct sensor_device_attribute_2 *attr = to_sensor_dev_attr_2(dev_attr);
+  struct zc_data *state                  = attr_data(dev);
+  u8 offset, value;
+  int result;
 
-	switch (a->nr) {
-	case 0: off = chan[a->index].start_temp; break;
-	case 1: off = chan[a->index].full_temp;  break;
-	case 2: off = chan[a->index].start_pwm;  break;
-	case 3: off = chan[a->index].slope;      break;
-	default: return -EINVAL;
-	}
+  switch (attr->nr)
+  {
+    case 0:   offset = channels[attr->index].start_temp; break;
+    case 1:   offset = channels[attr->index].full_temp;  break;
+    case 2:   offset = channels[attr->index].start_pwm;  break;
+    case 3:   offset = channels[attr->index].slope;      break;
+    default:  return -EINVAL;
+  }
 
-	mutex_lock(&d->lock);
-	ret = ec_r(off, &v);
-	mutex_unlock(&d->lock);
-	if (ret)
-		return ret;
+  mutex_lock(&state->lock);
+  result = read_ec_reg(offset, &value);
+  mutex_unlock(&state->lock);
+  if (result)
+    return result;
 
-	if (a->nr <= 1)			/* temperatures, in millidegrees */
-		return sysfs_emit(buf, "%d\n", v * 1000);
-	if (a->nr == 2)			/* start PWM, in hwmon 0..255 units */
-		return sysfs_emit(buf, "%ld\n", ec_to_hwmon_pwm(v));
-	return sysfs_emit(buf, "%u\n", v);	/* slope, raw duty units per degC */
+  /* temperatures are reported in millidegrees */
+  if (attr->nr <= 1)
+    return sysfs_emit(buf, "%d\n", value * 1000);
+
+  /* start PWM in hwmon 0..255 units */
+  if (attr->nr == 2)
+    return sysfs_emit(buf, "%ld\n", ec_to_hwmon_pwm(value));
+
+  /* slope, raw duty units per degC */
+  return sysfs_emit(buf, "%u\n", value);
 }
 
-static ssize_t curve_store(struct device *dev, struct device_attribute *da,
-			   const char *buf, size_t count)
+static ssize_t curve_store(struct device *dev, struct device_attribute *dev_attr,
+                           const char *buf, size_t count)
 {
-	struct sensor_device_attribute_2 *a = to_sensor_dev_attr_2(da);
-	struct zc_data *d = attr_data(dev);
-	long in;
-	u8 off, v;
-	int ret;
+  struct sensor_device_attribute_2 *attr = to_sensor_dev_attr_2(dev_attr);
+  struct zc_data *state = attr_data(dev);
+  u8 offset, value;
+  int result;
+  long input;
 
-	ret = kstrtol(buf, 10, &in);
-	if (ret)
-		return ret;
+  result = kstrtol(buf, 10, &input);
+  if (result)
+    return result;
 
-	switch (a->nr) {
-	case 0:
-		off = chan[a->index].start_temp;
-		v = clamp_val(in / 1000, 0, 127);
-		break;
-	case 1:
-		off = chan[a->index].full_temp;
-		v = clamp_val(in / 1000, 0, 127);
-		break;
-	case 2:
-		off = chan[a->index].start_pwm;
-		v = hwmon_to_ec_pwm(in);
-		break;
-	case 3:
-		off = chan[a->index].slope;
-		v = clamp_val(in, 0, 255);
-		break;
-	default:
-		return -EINVAL;
-	}
+  switch (attr->nr)
+  {
+    case 0:
+      offset = channels[attr->index].start_temp;
+      value  = clamp_val(input / 1000, 0, 127);
+      break;
+    case 1:
+      offset = channels[attr->index].full_temp;
+      value  = clamp_val(input / 1000, 0, 127);
+      break;
+    case 2:
+      offset = channels[attr->index].start_pwm;
+      value  = hwmon_to_ec_pwm(input);
+      break;
+    case 3:
+      offset = channels[attr->index].slope;
+      value  = clamp_val(input, 0, 255);
+      break;
+    default:
+      return -EINVAL;
+  }
 
-	mutex_lock(&d->lock);
-	ret = ec_w(off, v);
-	d->valid = false;
-	mutex_unlock(&d->lock);
+  mutex_lock(&state->lock);
+  result = write_ec_reg(offset, value);
+  state->valid = false;
+  mutex_unlock(&state->lock);
 
-	return ret ? ret : count;
+  return result ? result : count;
 }
 
 static SENSOR_DEVICE_ATTR_2_RW(pwm1_auto_point1_temp, curve, 0, 0);
@@ -628,19 +689,19 @@ static SENSOR_DEVICE_ATTR_2_RW(pwm2_auto_point2_temp, curve, 1, 1);
 static SENSOR_DEVICE_ATTR_2_RW(pwm2_auto_point1_pwm,  curve, 2, 1);
 static SENSOR_DEVICE_ATTR_2_RW(pwm2_slope,            curve, 3, 1);
 
-static struct attribute *zc_curve_attrs[] = {
-	&sensor_dev_attr_pwm1_auto_point1_temp.dev_attr.attr,
-	&sensor_dev_attr_pwm1_auto_point2_temp.dev_attr.attr,
-	&sensor_dev_attr_pwm1_auto_point1_pwm.dev_attr.attr,
-	&sensor_dev_attr_pwm1_slope.dev_attr.attr,
-	&sensor_dev_attr_pwm2_auto_point1_temp.dev_attr.attr,
-	&sensor_dev_attr_pwm2_auto_point2_temp.dev_attr.attr,
-	&sensor_dev_attr_pwm2_auto_point1_pwm.dev_attr.attr,
-	&sensor_dev_attr_pwm2_slope.dev_attr.attr,
-	NULL
+static struct attribute *zc_curve_attrs[] =
+{
+  &sensor_dev_attr_pwm1_auto_point1_temp.dev_attr.attr,
+  &sensor_dev_attr_pwm1_auto_point2_temp.dev_attr.attr,
+  &sensor_dev_attr_pwm1_auto_point1_pwm.dev_attr.attr,
+  &sensor_dev_attr_pwm1_slope.dev_attr.attr,
+  &sensor_dev_attr_pwm2_auto_point1_temp.dev_attr.attr,
+  &sensor_dev_attr_pwm2_auto_point2_temp.dev_attr.attr,
+  &sensor_dev_attr_pwm2_auto_point1_pwm.dev_attr.attr,
+  &sensor_dev_attr_pwm2_slope.dev_attr.attr,
+  NULL
 };
 ATTRIBUTE_GROUPS(zc_curve);
-
 
 /* ------------------------------------------------------------------- debugfs */
 
@@ -648,101 +709,104 @@ static struct dentry *zc_debugfs;
 
 static const u16 dump_duty[] = { REG_PWM_CPU_DUTY, REG_PWM_SYS_DUTY };
 
-static const char *mode_name(u8 m)
+static const char *mode_name(u8 mode)
 {
-	switch (m) {
-	case FAN_MODE_OFF:	return "off";
-	case FAN_MODE_MANUAL:	return "manual";
-	case FAN_MODE_AUTO:	return "automatic";
-	case FAN_MODE_FULL:	return "full speed";
-	case 4:			return "SILENT (not implemented by EC!)";
-	default:		return "unknown";
-	}
+  switch (mode)
+  {
+    case FAN_MODE_OFF:     return "off";
+    case FAN_MODE_MANUAL:  return "manual";
+    case FAN_MODE_AUTO:    return "automatic";
+    case FAN_MODE_FULL:    return "full speed";
+    case 4:                return "SILENT (not implemented by EC!)";
+    default:               return "unknown";
+  }
 }
 
-static int zc_regs_show(struct seq_file *sf, void *unused)
+static int zc_regs_show(struct seq_file *output, void *unused)
 {
-	u8 ec[0x100];
-	u8 duty[ARRAY_SIZE(dump_duty)];
-	bool have_duty;
-	int i, ch;
+  u8 window[0x100];
+  u8 duties[ARRAY_SIZE(dump_duty)];
+  bool have_duty;
+  int index, channel_index;
 
-	memset(ec, 0, sizeof(ec));
-	for (i = 0x20; i <= 0x37; i++)
-		ec_r(i, &ec[i]);
-	for (i = 0x70; i <= 0x79; i++)
-		ec_r(i, &ec[i]);
-	ec_r(0xa1, &ec[0xa1]);
-	ec_r(0xa2, &ec[0xa2]);
+  memset(window, 0, sizeof(window));
+  for (index = 0x20; index <= 0x37; index++)
+    read_ec_reg(index, &window[index]);
+  for (index = 0x70; index <= 0x79; index++)
+    read_ec_reg(index, &window[index]);
+  read_ec_reg(0xa1, &window[0xa1]);
+  read_ec_reg(0xa2, &window[0xa2]);
 
-	have_duty = sio_ind_read_batch(dump_duty, duty, ARRAY_SIZE(dump_duty)) == 0;
+  have_duty = (sio_ind_read_batch(dump_duty, duties, ARRAY_SIZE(dump_duty)) == 0);
 
-	seq_puts(sf, "ACPI EC register window\n");
-	for (i = 0x20; i <= 0x30; i += 0x10) {
-		int j;
+  seq_puts(output, "ACPI EC register window\n");
+  for (index = 0x20; index <= 0x30; index += 0x10)
+  {
+    int column;
 
-		seq_printf(sf, "  %02x:", i);
-		for (j = 0; j < 16 && i + j <= 0x37; j++)
-			seq_printf(sf, " %02x", ec[i + j]);
-		seq_puts(sf, "\n");
-	}
-	seq_puts(sf, "  70:");
-	for (i = 0x70; i <= 0x79; i++)
-		seq_printf(sf, " %02x", ec[i]);
-	seq_puts(sf, "\n");
+    seq_printf(output, "  %02x:", index);
+    for (column = 0; (column < 16) && ((index + column) <= 0x37); column++)
+      seq_printf(output, " %02x", window[index + column]);
+    seq_puts(output, "\n");
+  }
+  seq_puts(output, "  70:");
+  for (index = 0x70; index <= 0x79; index++)
+    seq_printf(output, " %02x", window[index]);
+  seq_puts(output, "\n");
 
-	for (ch = 0; ch < 2; ch++) {
-		const struct chan_regs *c = &chan[ch];
-		u8 mode = ec[c->mode];
-		int start = ec[c->start_pwm], slope = ec[c->slope];
-		int st = ec[c->start_temp], ft = ec[c->full_temp];
-		int t = ec[EC_TEMP_CTRL], pred;
-		unsigned int fs = fullscale ? fullscale : EC_PWM_SCALE;
+  for (channel_index = 0; channel_index < 2; channel_index++)
+  {
+    const struct chan_regs *regs = &channels[channel_index];
+    u8 mode                      = window[regs->mode];
+    int start                    = window[regs->start_pwm];
+    int slope                    = window[regs->slope];
+    int start_temp               = window[regs->start_temp];
+    int full_temp                = window[regs->full_temp];
+    int temperature              = window[EC_TEMP_CTRL];
+    unsigned int full_scale      = fullscale ? fullscale : EC_PWM_SCALE;
+    int predicted;
 
-		seq_printf(sf, "\n%s (channel %d)\n", c->label, ch);
-		seq_printf(sf, "  mode        0x%02x = %u (%s)\n",
-			   c->mode, mode, mode_name(mode));
-		seq_printf(sf, "  manual pwm  0x%02x = %u/%u\n",
-			   c->manual_pwm, ec[c->manual_pwm], fs);
-		seq_printf(sf, "  start pwm   0x%02x = %u/%u\n", c->start_pwm, start, fs);
-		seq_printf(sf, "  slope       0x%02x = %u\n", c->slope, slope);
-		seq_printf(sf, "  start temp  0x%02x = %u C\n", c->start_temp, st);
-		seq_printf(sf, "  full temp   0x%02x = %u C\n", c->full_temp, ft);
-		seq_printf(sf, "  rpm         0x%02x = %u\n",
-			   c->rpm_hi, (ec[c->rpm_hi] << 8) | ec[c->rpm_lo]);
+    seq_printf(output, "\n%s (channel %d)\n",              regs->label, channel_index);
+    seq_printf(output, "  mode        0x%02x = %u (%s)\n", regs->mode, mode, mode_name(mode));
+    seq_printf(output, "  manual pwm  0x%02x = %u/%u\n",   regs->manual_pwm, window[regs->manual_pwm], full_scale);
+    seq_printf(output, "  start pwm   0x%02x = %u/%u\n",   regs->start_pwm, start, full_scale);
+    seq_printf(output, "  slope       0x%02x = %u\n",      regs->slope, slope);
+    seq_printf(output, "  start temp  0x%02x = %u C\n",    regs->start_temp, start_temp);
+    seq_printf(output, "  full temp   0x%02x = %u C\n",    regs->full_temp, full_temp);
+    seq_printf(output, "  rpm         0x%02x = %u\n",      regs->rpm_hi, (window[regs->rpm_hi] << 8) | window[regs->rpm_lo]);
 
-		if (t >= ft)
-			pred = fs;
-		else if (t < st)
-			pred = -1;
-		else
-			pred = start + (t - st) * slope;
+    if (temperature >= full_temp)
+      predicted = full_scale;
+    else if (temperature < start_temp)
+      predicted = -1;
+    else
+      predicted = start + (temperature - start_temp) * slope;
 
-		if (pred < 0)
-			seq_puts(sf, "  auto curve  T below start temp -> holds previous\n");
-		else
-			seq_printf(sf, "  auto curve  predicts %d/%u at T=%d C%s\n",
-				   pred, fs, t,
-				   pred > EC_BIOS_PWM_CAP ? "  (above the BIOS UI cap of 122)" : "");
+    if (predicted < 0)
+      seq_puts(output, "  auto curve  T below start temp -> holds previous\n");
+    else
+      seq_printf(output, "  auto curve  predicts %d/%u at T=%d C%s\n",
+                 predicted, full_scale, temperature,
+                 (predicted > EC_BIOS_PWM_CAP) ?
+                 "  (above the BIOS UI cap of 122)" : "");
 
-		if (have_duty) {
-			u8 dcr = duty[ch];
+    if (have_duty)
+    {
+      u8 duty = duties[channel_index];
 
-			seq_printf(sf, "  live duty   %u/%u", dcr, fs);
-			if (mode == FAN_MODE_AUTO && pred >= 0)
-				seq_printf(sf, "  (prediction %d, delta %d)",
-					   pred, (int)dcr - pred);
-			seq_puts(sf, "\n");
-		}
-	}
+      seq_printf(output, "  live duty   %u/%u", duty, full_scale);
+      if ((mode == FAN_MODE_AUTO) && (predicted >= 0))
+        seq_printf(output, "  (prediction %d, delta %d)",
+                   predicted, (int)duty - predicted);
+      seq_puts(output, "\n");
+    }
+  }
 
-	seq_printf(sf, "\ntemps: ctrl(0x70)=%u C  max(0x71)=%u C  board(0x72)=%u C  cpu*10(0xA1)=%u\n",
-		   ec[0x70], ec[0x71], ec[0x72], (ec[0xa2] << 8) | ec[0xa1]);
-	return 0;
+  seq_printf(output, "\ntemps: ctrl(0x70)=%u C  max(0x71)=%u C  board(0x72)=%u C  cpu*10(0xA1)=%u\n",
+             window[0x70], window[0x71], window[0x72], (window[0xa2] << 8) | window[0xa1]);
+  return 0;
 }
 DEFINE_SHOW_ATTRIBUTE(zc_regs);
-
-
 
 /*
  * Raw access to the ACPI EC window, for probing registers that have no mirror in
@@ -759,72 +823,75 @@ DEFINE_SHOW_ATTRIBUTE(zc_regs);
  * It takes "<offset> <value>" in hex, is root-only and debugfs-only, and logs
  * every write.
  */
-static int zc_ec_raw_show(struct seq_file *sf, void *unused)
+static int zc_ec_raw_show(struct seq_file *output, void *unused)
 {
-	int i, j;
+  int index, column;
 
-	for (i = 0; i < 0x100; i += 16) {
-		seq_printf(sf, "%02x:", i);
-		for (j = 0; j < 16; j++) {
-			u8 v;
+  for (index = 0; index < 0x100; index += 16)
+  {
+    seq_printf(output, "%02x:", index);
+    for (column = 0; column < 16; column++)
+    {
+      u8 value;
 
-			if (ec_r(i + j, &v))
-				seq_puts(sf, " --");
-			else
-				seq_printf(sf, " %02x", v);
-		}
-		seq_puts(sf, "\n");
-	}
-	return 0;
+      if (read_ec_reg(index + column, &value))
+        seq_puts(output, " --");
+      else
+        seq_printf(output, " %02x", value);
+    }
+    seq_puts(output, "\n");
+  }
+  return 0;
 }
 
 static int zc_ec_raw_open(struct inode *inode, struct file *file)
 {
-	return single_open(file, zc_ec_raw_show, inode->i_private);
+  return single_open(file, zc_ec_raw_show, inode->i_private);
 }
 
 #ifdef ZC_ALLOW_EC_WRITE
 static ssize_t zc_ec_raw_write(struct file *file, const char __user *ubuf,
-			       size_t len, loff_t *ppos)
+                               size_t len, loff_t *ppos)
 {
-	struct zc_data *d = file_inode(file)->i_private;
-	char buf[32];
-	unsigned int off, val;
-	int ret;
+  struct zc_data *state = file_inode(file)->i_private;
+  char buf[32];
+  unsigned int offset, value;
+  int result;
 
-	if (len >= sizeof(buf))
-		return -EINVAL;
-	if (copy_from_user(buf, ubuf, len))
-		return -EFAULT;
-	buf[len] = '\0';
+  if (len >= sizeof(buf))
+    return -EINVAL;
+  if (copy_from_user(buf, ubuf, len))
+    return -EFAULT;
+  buf[len] = '\0';
 
-	if (sscanf(buf, "%x %x", &off, &val) != 2)
-		return -EINVAL;
-	if (off > 0xff || val > 0xff)
-		return -EINVAL;
+  if (sscanf(buf, "%x %x", &offset, &value) != 2)
+    return -EINVAL;
+  if ((offset > 0xff) || (value > 0xff))
+    return -EINVAL;
 
-	pr_warn("debugfs write: EC RAM 0x%02x = 0x%02x\n", off, val);
+  pr_warn("debugfs write: EC RAM 0x%02x = 0x%02x\n", offset, value);
 
-	mutex_lock(&d->lock);
-	ret = ec_w(off, val);
-	d->valid = false;
-	mutex_unlock(&d->lock);
+  mutex_lock(&state->lock);
+  result = write_ec_reg(offset, value);
+  state->valid = false;
+  mutex_unlock(&state->lock);
 
-	return ret ? ret : len;
+  return result ? result : len;
 }
-#define ZC_EC_RAW_MODE	0600
+#define ZC_EC_RAW_MODE  0600
 #else
-#define zc_ec_raw_write	NULL
-#define ZC_EC_RAW_MODE	0400
+#define zc_ec_raw_write  NULL
+#define ZC_EC_RAW_MODE   0400
 #endif
 
-static const struct file_operations zc_ec_raw_fops = {
-	.owner		= THIS_MODULE,
-	.open		= zc_ec_raw_open,
-	.read		= seq_read,
-	.llseek		= seq_lseek,
-	.release	= single_release,
-	.write		= zc_ec_raw_write,
+static const struct file_operations zc_ec_raw_fops =
+{
+  .owner   = THIS_MODULE,
+  .open    = zc_ec_raw_open,
+  .read    = seq_read,
+  .llseek  = seq_lseek,
+  .release = single_release,
+  .write   = zc_ec_raw_write,
 };
 
 /* ---------------------------------------------------------------- DMI gating */
@@ -834,64 +901,70 @@ static const struct file_operations zc_ec_raw_fops = {
  * Super I/O chip ID says nothing about it -- that assumption is exactly why an
  * earlier IT5570 driver read a pair of fan mode bytes as "514 RPM" here. So bind
  * only on boards that have actually been checked.
+ *
+ * zc_dmi_verified: layouts confirmed on the exact board.
+ * zc_dmi_family:   same family, unverified -- bind, but warn.
  */
-/* Verified: the register map in this driver was confirmed on this exact board. */
-static const struct dmi_system_id zc_dmi_verified[] = {
-	{
-		.ident = "IceWhale ZimaCube Pro",
-		.matches = {
-			DMI_MATCH(DMI_SYS_VENDOR, "IceWhale"),
-			DMI_MATCH(DMI_BOARD_NAME, "ZimaCube Pro"),
-		},
-	},
-	{ }
+static const struct dmi_system_id zc_dmi_verified[] =
+{
+  {
+    .ident   = "IceWhale ZimaCube Pro",
+    .matches =
+    {
+      DMI_MATCH(DMI_SYS_VENDOR, "IceWhale"),
+      DMI_MATCH(DMI_BOARD_NAME, "ZimaCube Pro"),
+    },
+  },
+  { }
 };
 
-/* Same family, layout not verified -- bind, but say so. */
-static const struct dmi_system_id zc_dmi_family[] = {
-	{
-		.ident = "IceWhale ZimaCube (unverified variant)",
-		.matches = {
-			DMI_MATCH(DMI_SYS_VENDOR, "IceWhale"),
-			DMI_MATCH(DMI_BOARD_NAME, "ZimaCube"),
-		},
-	},
-	{ }
+static const struct dmi_system_id zc_dmi_family[] =
+{
+  {
+    .ident   = "IceWhale ZimaCube (unverified variant)",
+    .matches =
+    {
+      DMI_MATCH(DMI_SYS_VENDOR, "IceWhale"),
+      DMI_MATCH(DMI_BOARD_NAME, "ZimaCube"),
+    },
+  },
+  { }
 };
 
 static void zc_print_dmi(void)
 {
-	pr_info("  sys_vendor=\"%s\" board_name=\"%s\" bios_version=\"%s\"\n",
-		dmi_get_system_info(DMI_SYS_VENDOR) ?: "?",
-		dmi_get_system_info(DMI_BOARD_NAME) ?: "?",
-		dmi_get_system_info(DMI_BIOS_VERSION) ?: "?");
+  pr_info("  sys_vendor=\"%s\" board_name=\"%s\" bios_version=\"%s\"\n",
+          dmi_get_system_info(DMI_SYS_VENDOR) ?: "?",
+          dmi_get_system_info(DMI_BOARD_NAME) ?: "?",
+          dmi_get_system_info(DMI_BIOS_VERSION) ?: "?");
 }
 
 static int zc_check_dmi(void)
 {
-	const struct dmi_system_id *id;
+  const struct dmi_system_id *match;
 
-	id = dmi_first_match(zc_dmi_verified);
-	if (id) {
-		pr_info("matched verified board: %s\n", id->ident);
-		return 0;
-	}
+  match = dmi_first_match(zc_dmi_verified);
+  if (match)
+  {
+    pr_info("matched verified board: %s\n", match->ident);
+    return 0;
+  }
 
-	id = dmi_first_match(zc_dmi_family);
-	if (id) {
-		pr_warn("%s: the EC RAM layout was verified on ZimaCube Pro only.\n",
-			id->ident);
-		pr_warn("  Check /sys/kernel/debug/%s/regs before trusting pwm writes.\n",
-			DRVNAME);
-		zc_print_dmi();
-		return 0;
-	}
+  match = dmi_first_match(zc_dmi_family);
+  if (match)
+  {
+    pr_warn("%s: the EC RAM layout was verified on ZimaCube Pro only.\n",
+            match->ident);
+    pr_warn("  Check /sys/kernel/debug/%s/regs before trusting pwm writes.\n", DRVNAME);
+    zc_print_dmi();
+    return 0;
+  }
 
-	pr_err("not a known board, refusing to bind.\n");
-	zc_print_dmi();
-	pr_err("  A matching Super I/O chip ID does not imply a matching EC RAM layout.\n");
-	pr_err("  force=1 overrides this; read the module parameter description first.\n");
-	return -ENODEV;
+  pr_err("not a known board, refusing to bind.\n");
+  zc_print_dmi();
+  pr_err("  A matching Super I/O chip ID does not imply a matching EC RAM layout.\n");
+  pr_err("  force=1 overrides this; read the module parameter description first.\n");
+  return -ENODEV;
 }
 
 /*
@@ -904,63 +977,72 @@ static int zc_check_dmi(void)
  */
 static int zc_sanity_check(void)
 {
-	u8 m[2], st[2], ft[2], t70, t71, t72;
-	u16 rpm[2];
-	int i, ret;
+  u8 modes[2], start_temps[2], full_temps[2];
+  u8 control_temp, max_temp, board_temp;
+  u16 speeds[2];
+  int index, result;
 
-	for (i = 0; i < 2; i++) {
-		ret = ec_r(chan[i].mode, &m[i]);
-		if (ret)
-			return ret;
-		ret = ec_r(chan[i].start_temp, &st[i]);
-		if (ret)
-			return ret;
-		ret = ec_r(chan[i].full_temp, &ft[i]);
-		if (ret)
-			return ret;
-		ret = ec_r16be(chan[i].rpm_hi, &rpm[i]);
-		if (ret)
-			return ret;
-	}
-	ret = ec_r(EC_TEMP_CTRL, &t70);
-	if (!ret)
-		ret = ec_r(EC_TEMP_MAX, &t71);
-	if (!ret)
-		ret = ec_r(EC_TEMP_BOARD, &t72);
-	if (ret)
-		return ret;
+  for (index = 0; index < 2; index++)
+  {
+    result = read_ec_reg(channels[index].mode, &modes[index]);
+    if (result)
+      return result;
+    result = read_ec_reg(channels[index].start_temp, &start_temps[index]);
+    if (result)
+      return result;
+    result = read_ec_reg(channels[index].full_temp, &full_temps[index]);
+    if (result)
+      return result;
+    result = read_ec_reg16(channels[index].rpm_hi, &speeds[index]);
+    if (result)
+      return result;
+  }
+  result = read_ec_reg(EC_TEMP_CTRL, &control_temp);
+  if (!result)
+    result = read_ec_reg(EC_TEMP_MAX, &max_temp);
+  if (!result)
+    result = read_ec_reg(EC_TEMP_BOARD, &board_temp);
+  if (result)
+    return result;
 
-	for (i = 0; i < 2; i++) {
-		if (m[i] > 4) {
-			pr_err("EC[0x%02x] = %u is not a valid fan mode\n",
-			       chan[i].mode, m[i]);
-			return -ENODEV;
-		}
-		if (st[i] > 127 || ft[i] > 127 || st[i] > ft[i]) {
-			pr_err("EC[0x%02x]/[0x%02x] = %u/%u are not a sane temperature pair\n",
-			       chan[i].start_temp, chan[i].full_temp, st[i], ft[i]);
-			return -ENODEV;
-		}
-		if (rpm[i] > 20000) {
-			pr_err("EC[0x%02x] = %u is not a plausible fan speed\n",
-			       chan[i].rpm_hi, rpm[i]);
-			return -ENODEV;
-		}
-	}
-	if (t70 > 110 || t72 > 110) {
-		pr_err("EC[0x70]/[0x72] = %u/%u are not plausible temperatures\n",
-		       t70, t72);
-		return -ENODEV;
-	}
+  for (index = 0; index < 2; index++)
+  {
+    if (modes[index] > 4)
+    {
+      pr_err("EC[0x%02x] = %u is not a valid fan mode\n",
+             channels[index].mode, modes[index]);
+      return -ENODEV;
+    }
+    if ((start_temps[index] > 127) || (full_temps[index] > 127) ||
+        (start_temps[index] > full_temps[index]))
+    {
+      pr_err("EC[0x%02x]/[0x%02x] = %u/%u are not a sane temperature pair\n",
+             channels[index].start_temp, channels[index].full_temp,
+             start_temps[index], full_temps[index]);
+      return -ENODEV;
+    }
+    if (speeds[index] > 20000)
+    {
+      pr_err("EC[0x%02x] = %u is not a plausible fan speed\n",
+             channels[index].rpm_hi, speeds[index]);
+      return -ENODEV;
+    }
+  }
+  if ((control_temp > 110) || (board_temp > 110))
+  {
+    pr_err("EC[0x70]/[0x72] = %u/%u are not plausible temperatures\n",
+           control_temp, board_temp);
+    return -ENODEV;
+  }
 
-	/* EC[0x71] == max(EC[0x70], EC[0x72]); a race can break it, so only warn. */
-	if (t71 != max(t70, t72))
-		pr_warn("EC[0x71] = %u but max(EC[0x70], EC[0x72]) = %u -- layout may differ\n",
-			t71, max(t70, t72));
+  /* EC[0x71] == max(EC[0x70], EC[0x72]); a race can break it, so only warn. */
+  if (max_temp != max(control_temp, board_temp))
+    pr_warn("EC[0x71] = %u but max(EC[0x70], EC[0x72]) = %u -- layout may differ\n",
+            max_temp, max(control_temp, board_temp));
 
-	pr_info("layout check passed: modes %u/%u, temps %u/%u/%u C, fans %u/%u RPM\n",
-		m[0], m[1], t70, t71, t72, rpm[0], rpm[1]);
-	return 0;
+  pr_info("layout check passed: modes %u/%u, temps %u/%u/%u C, fans %u/%u RPM\n",
+          modes[0], modes[1], control_temp, max_temp, board_temp, speeds[0], speeds[1]);
+  return 0;
 }
 
 /* ----------------------------------------------------------------- platform */
@@ -969,105 +1051,115 @@ static struct platform_device *zc_pdev;
 
 static int zc_probe(struct platform_device *pdev)
 {
-	struct zc_data *d;
-	struct device *hwmon;
+  struct zc_data *state;
+  struct device *hwmon;
+  int failed;
 
-	d = devm_kzalloc(&pdev->dev, sizeof(*d), GFP_KERNEL);
-	if (!d)
-		return -ENOMEM;
+  state = devm_kzalloc(&pdev->dev, sizeof(*state), GFP_KERNEL);
+  if (!state)
+    return -ENOMEM;
 
-	mutex_init(&d->lock);
-	platform_set_drvdata(pdev, d);
+  mutex_init(&state->lock);
+  platform_set_drvdata(pdev, state);
 
-	hwmon = devm_hwmon_device_register_with_info(&pdev->dev, "zimacube_ec",
-						    d, &zc_chip_info,
-						    zc_curve_groups);
-	if (IS_ERR(hwmon))
-		return PTR_ERR(hwmon);
+  hwmon = devm_hwmon_device_register_with_info(&pdev->dev, "zimacube_ec",
+                                               state, &zc_chip_info,
+                                               zc_curve_groups);
+  if (IS_ERR(hwmon))
+    return PTR_ERR(hwmon);
 
-	if (!ec_r(chan[0].mode, &d->mode_at_probe[0]) &&
-	    !ec_r(chan[1].mode, &d->mode_at_probe[1]))
-		d->mode_saved = true;
+  failed  = read_ec_reg(channels[0].mode, &state->mode_at_probe[0]);
+  failed |= read_ec_reg(channels[1].mode, &state->mode_at_probe[1]);
+  state->mode_saved = (failed == 0);
 
-	zc_debugfs = debugfs_create_dir(DRVNAME, NULL);
-	debugfs_create_file("regs", 0400, zc_debugfs, d, &zc_regs_fops);
-	debugfs_create_file("ec_raw", ZC_EC_RAW_MODE, zc_debugfs, d,
-			    &zc_ec_raw_fops);
+  zc_debugfs = debugfs_create_dir(DRVNAME, NULL);
+  debugfs_create_file("regs", 0400, zc_debugfs, state, &zc_regs_fops);
+  debugfs_create_file("ec_raw", ZC_EC_RAW_MODE, zc_debugfs, state,
+                      &zc_ec_raw_fops);
 
-	if (zc_update(d) == 0)
-		dev_info(&pdev->dev,
-			 "CPU %d.%d C, board %d C | CPU fan %u RPM (%u%%, mode %u) | SYS fan %u RPM (%u%%, mode %u)%s\n",
-			 d->temp_cpu10 / 10, d->temp_cpu10 % 10, d->temp_board,
-			 d->rpm[0], d->duty[0] * 100 / (fullscale ?: EC_PWM_SCALE), d->mode[0],
-			 d->rpm[1], d->duty[1] * 100 / (fullscale ?: EC_PWM_SCALE), d->mode[1],
-			 d->fullscale ? "" : " [live duty unavailable]");
-	return 0;
+  if (zc_update(state) == 0)
+    dev_info(&pdev->dev,
+             "CPU %d.%d C, board %d C | CPU fan %u RPM (%u%%, mode %u) | SYS fan %u RPM (%u%%, mode %u)%s\n",
+             state->temp_cpu10 / 10, state->temp_cpu10 % 10, state->temp_board,
+             state->speeds[0], state->duty[0] * 100 / EC_PWM_SCALE, state->mode[0],
+             state->speeds[1], state->duty[1] * 100 / EC_PWM_SCALE, state->mode[1],
+             state->full_scale ? "" : " [live duty unavailable]");
+  return 0;
 }
 
-static struct platform_driver zc_driver = {
-	.driver = { .name = DRVNAME },
-	.probe	= zc_probe,
+static struct platform_driver zc_driver =
+{
+  .driver = { .name = DRVNAME },
+  .probe  = zc_probe,
 };
 
 static int __init zc_init(void)
 {
-	u16 id = 0;
-	int ret;
+  u16 chip_id = 0;
+  int result;
 
-	if (!force) {
-		ret = zc_check_dmi();
-		if (ret)
-			return ret;
-	} else {
-		pr_warn("force=1: binding without a DMI match; the EC RAM layout may not apply to this board\n");
-	}
+  if (!force)
+  {
+    result = zc_check_dmi();
+    if (result)
+      return result;
+  }
+  else
+  {
+    pr_warn("force=1: binding without a DMI match; the EC RAM layout may not apply to this board\n");
+  }
 
-	ret = sio_chipid(&id);
-	if (ret)
-		return ret;
-	if (id != IT5570_CHIPID) {
-		pr_info("Super I/O chip ID 0x%04x is not IT5570\n", id);
-		return -ENODEV;
-	}
-	pr_info("found ITE IT5570/IT5570E (ID 0x%04x)\n", id);
+  result = sio_chipid(&chip_id);
+  if (result)
+    return result;
+  if (chip_id != IT5570_CHIPID)
+  {
+    pr_info("Super I/O chip ID 0x%04x is not IT5570\n", chip_id);
+    return -ENODEV;
+  }
+  pr_info("found ITE IT5570/IT5570E (ID 0x%04x)\n", chip_id);
 
-	ret = zc_sanity_check();
-	if (ret) {
-		if (!force) {
-			pr_err("EC RAM does not look like the expected layout, refusing to bind\n");
-			return ret;
-		}
-		pr_warn("force=1: binding despite a failed layout check\n");
-	}
+  result = zc_sanity_check();
+  if (result)
+  {
+    if (!force)
+    {
+      pr_err("EC RAM does not look like the expected layout, refusing to bind\n");
+      return result;
+    }
+    pr_warn("force=1: binding despite a failed layout check\n");
+  }
 
-	ret = platform_driver_register(&zc_driver);
-	if (ret)
-		return ret;
+  result = platform_driver_register(&zc_driver);
+  if (result)
+    return result;
 
-	zc_pdev = platform_device_register_simple(DRVNAME, -1, NULL, 0);
-	if (IS_ERR(zc_pdev)) {
-		platform_driver_unregister(&zc_driver);
-		return PTR_ERR(zc_pdev);
-	}
-	return 0;
+  zc_pdev = platform_device_register_simple(DRVNAME, -1, NULL, 0);
+  if (IS_ERR(zc_pdev))
+  {
+    platform_driver_unregister(&zc_driver);
+    return PTR_ERR(zc_pdev);
+  }
+  return 0;
 }
 
 static void __exit zc_exit(void)
 {
-	struct zc_data *d = platform_get_drvdata(zc_pdev);
-	int i;
+  struct zc_data *state = platform_get_drvdata(zc_pdev);
+  int index;
 
-	/*
-	 * Put the fans back the way we found them rather than forcing Automatic:
-	 * the user may deliberately have selected Manual or Full Speed in BIOS.
-	 */
-	for (i = 0; i < 2; i++)
-		ec_w(chan[i].mode,
-		     (d && d->mode_saved) ? d->mode_at_probe[i] : FAN_MODE_AUTO);
+  /*
+   * Put the fans back the way we found them rather than forcing Automatic:
+   * the user may deliberately have selected Manual or Full Speed in BIOS.
+   */
+  for (index = 0; index < 2; index++)
+    write_ec_reg(channels[index].mode,
+                 (state && state->mode_saved) ?
+                 state->mode_at_probe[index] : FAN_MODE_AUTO);
 
-	debugfs_remove_recursive(zc_debugfs);
-	platform_device_unregister(zc_pdev);
-	platform_driver_unregister(&zc_driver);
+  debugfs_remove_recursive(zc_debugfs);
+  platform_device_unregister(zc_pdev);
+  platform_driver_unregister(&zc_driver);
 }
 
 module_init(zc_init);
