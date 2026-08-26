@@ -176,7 +176,25 @@ MODULE_PARM_DESC(sio_ima, "Use the Super I/O indirect window to read live PWM du
 
 static unsigned int fullscale = EC_PWM_SCALE;
 module_param(fullscale, uint, 0644);
-MODULE_PARM_DESC(fullscale, "PWM duty register value that means 100% (default 255, measured via Full Speed mode). Set to 122 to stay inside the range BIOS Setup uses.");
+MODULE_PARM_DESC(fullscale, "PWM duty register value that means 100% (default 255, measured via Full Speed mode). Set to 122 to stay inside the range BIOS Setup uses. Values of 0 or above 255 are ignored: the duty registers are 8-bit, so a larger value would wrap on write and silently under-drive the fan.");
+
+/*
+ * fullscale is writable at runtime and every use of it ends up in an 8-bit EC
+ * duty register. A value above 255 would wrap there -- 300 turns a requested
+ * 100% into 300 & 0xff = 44, i.e. 17% -- so clamp rather than trust it.
+ *
+ * Sample it exactly once: a concurrent sysfs write between a check and a
+ * separate return would hand the caller the very value the check rejected,
+ * and the compiler is free to reload a plain global anyway.
+ */
+static inline unsigned int pwm_full_scale(void)
+{
+  unsigned int value = READ_ONCE(fullscale);
+
+  if ((!value) || (value > EC_PWM_SCALE))
+    return EC_PWM_SCALE;
+  return value;
+}
 
 /* ------------------------------------------------------------------ Super I/O */
 
@@ -251,7 +269,7 @@ static int sio_ind_read_batch(const u16 *addresses, u8 *out, int count)
 static int read_live_duty(struct zc_data *state)
 {
   static const u16 addresses[2] = { REG_PWM_CPU_DUTY, REG_PWM_SYS_DUTY };
-  unsigned int full_scale       = fullscale ? fullscale : EC_PWM_SCALE;
+  unsigned int full_scale       = pwm_full_scale();
   int result, index;
   u8 duties[2];
 
@@ -358,7 +376,7 @@ static int zc_update(struct zc_data *state)
       if (state->mode[index] == FAN_MODE_MANUAL)
         read_ec_reg(channels[index].manual_pwm, &value);
       else if (state->mode[index] == FAN_MODE_FULL)
-        value = fullscale ? fullscale : EC_PWM_SCALE;
+        value = pwm_full_scale();
       state->duty[index] = value;
     }
   }
@@ -372,15 +390,14 @@ out:
 
 static inline long ec_to_hwmon_pwm(u8 duty)
 {
-  unsigned int full_scale = fullscale ? fullscale : EC_PWM_SCALE;
+  unsigned int full_scale = pwm_full_scale();
 
-  return DIV_ROUND_CLOSEST(min_t(unsigned int, duty, full_scale) * HWMON_PWM_MAX,
-                           full_scale);
+  return DIV_ROUND_CLOSEST(min_t(unsigned int, duty, full_scale) * HWMON_PWM_MAX, full_scale);
 }
 
 static inline u8 hwmon_to_ec_pwm(long pwm)
 {
-  unsigned int full_scale = fullscale ? fullscale : EC_PWM_SCALE;
+  unsigned int full_scale = pwm_full_scale();
 
   pwm = clamp_val(pwm, 0, HWMON_PWM_MAX);
   return DIV_ROUND_CLOSEST(pwm * full_scale, HWMON_PWM_MAX);
@@ -402,8 +419,14 @@ static umode_t zc_is_visible(const void *drvdata, enum hwmon_sensor_types type,
       {
         case hwmon_pwm_input:
         case hwmon_pwm_enable:
-        case hwmon_pwm_auto_channels_temp:
           return 0644;
+        /*
+         * Both curves are fed by one EC register (0x70), and nothing in the
+         * EC lets a channel be pointed at another sensor. Reporting the file
+         * as writable would promise an operation that cannot be honoured.
+         */
+        case hwmon_pwm_auto_channels_temp:
+          return 0444;
         default:
           return 0;
       }
@@ -515,14 +538,75 @@ static int zc_write(struct device *dev, enum hwmon_sensor_types type, u32 attr,
 
         /* manual: freeze at the duty the fan runs at now */
         case 1:
-          if (read_live_duty(state) && (!state->valid))
-            state->duty[channel] = 60;
-          result = write_ec_reg(regs->manual_pwm,
-                                state->duty[channel]);
+        {
+          unsigned int duty  = 0;
+          u8 start_pwm       = 0;
+          bool have_start    = (!read_ec_reg(regs->start_pwm, &start_pwm));
+          bool live_now      = (!read_live_duty(state));
+          /*
+           * Falling back on the cache needs two things that state->valid does
+           * not give on its own.
+           *
+           * Where the value came from: without the indirect window zc_update
+           * fills duty[] from the mode alone and leaves 0 for a channel in
+           * Automatic, marking that by clearing full_scale. Treating that 0
+           * as a measurement would be claiming knowledge we do not have.
+           *
+           * How old it is: valid stays set until something explicitly clears
+           * it, so on its own it would let an arbitrarily old reading pass as
+           * "the duty the fan runs at now". Apply the same freshness window
+           * zc_update uses.
+           */
+          bool cache_usable  = (state->valid) && (state->full_scale) &&
+                               time_before(jiffies, state->updated + CACHE_TTL);
+          bool have_live     = live_now || cache_usable;
+
+          /*
+           * "Freeze where the fan is" needs to know where the fan is. When
+           * the indirect window does not answer and the cache is cold, that
+           * is simply unknown, and picking a number would command an
+           * arbitrary speed behind the user's back. Fail instead.
+           *
+           * A stopped fan also reads back as 0, which the EC parks a channel
+           * at routinely: in Automatic it drops the target to 0 once the
+           * control temperature falls below start_temp - 5. Carrying that 0
+           * into the manual register latches the fan off for good -- manual
+           * never looks at temperature again, and the EC's kick-start only
+           * fires on the automatic target, not on this one.
+           *
+           * So refuse outright when the duty is unknown, and otherwise floor
+           * the measured value at the channel's own start PWM -- the duty the
+           * EC itself uses to get a stopped fan turning.
+           */
+          if (!have_live)
+          {
+            dev_warn(dev, "pwm%d_enable=1 refused: the current duty is unknown\n", channel + 1);
+            result = -EIO;
+            break;
+          }
+
+          /*
+           * The floor belongs to a duty we actually measured. Applying it to
+           * an unknown one would be the same invention in a different
+           * disguise, which is why that case is rejected above rather than
+           * quietly promoted to start_pwm.
+           */
+          duty = state->duty[channel];
+          if (have_start && (duty < start_pwm))
+            duty = start_pwm;
+
+          if (!duty)
+          {
+            dev_warn(dev, "pwm%d_enable=1 refused: fan is stopped and no usable start PWM\n", channel + 1);
+            result = -EIO;
+            break;
+          }
+
+          result = write_ec_reg(regs->manual_pwm, duty);
           if (!result)
-            result = write_ec_reg(regs->mode,
-                                  FAN_MODE_MANUAL);
+            result = write_ec_reg(regs->mode, FAN_MODE_MANUAL);
           break;
+        }
 
         /* hand back to the controller's own curve */
         case 2:
@@ -763,7 +847,7 @@ static int zc_regs_show(struct seq_file *output, void *unused)
     int start_temp               = window[regs->start_temp];
     int full_temp                = window[regs->full_temp];
     int temperature              = window[EC_TEMP_CTRL];
-    unsigned int full_scale      = fullscale ? fullscale : EC_PWM_SCALE;
+    unsigned int full_scale      = pwm_full_scale();
     int predicted;
 
     seq_printf(output, "\n%s (channel %d)\n",              regs->label, channel_index);
@@ -953,8 +1037,7 @@ static int zc_check_dmi(void)
   match = dmi_first_match(zc_dmi_family);
   if (match)
   {
-    pr_warn("%s: the EC RAM layout was verified on ZimaCube Pro only.\n",
-            match->ident);
+    pr_warn("%s: the EC RAM layout was verified on ZimaCube Pro only.\n", match->ident);
     pr_warn("  Check /sys/kernel/debug/%s/regs before trusting pwm writes.\n", DRVNAME);
     zc_print_dmi();
     return 0;
