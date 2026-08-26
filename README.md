@@ -43,10 +43,10 @@ install alongside an older build.
 | `make install-support` | only the support files, no module |
 | `make dkms-remove` | remove this version |
 | `make dkms-purge` | remove every installed version, including leftovers |
-| `make uninstall` | remove the support files |
+| `make uninstall` | remove the autoload rule, the apply script and the unit — keeps the curve config and the module. Disable the unit first, see below |
 
-The support files are autoload via `/etc/modules-load.d`, the curve config at
-`/etc/zimacube-fan-curve.conf` (never overwritten if it already exists), the apply script
+The support files are an autoload rule in `/etc/modules-load.d`, the curve config at
+`/etc/zimacube-fan-curve.conf` (never overwritten if it already exists), the apply script,
 and a systemd unit.
 
 To have the curve applied at boot:
@@ -56,6 +56,23 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now zimacube-fan-curve
 ```
 
+Removing it again is the same three steps in reverse:
+
+```sh
+sudo systemctl disable --now zimacube-fan-curve
+sudo make uninstall
+sudo systemctl daemon-reload
+```
+
+Both bookends matter. Disabling first is what removes the symlink in
+`multi-user.target.wants`; delete the unit file while it is still enabled and that symlink is
+left pointing at nothing, which systemd reports on every operation afterwards. The reload at
+the end is what makes systemd forget the unit it has already parsed.
+
+If `make uninstall` already ran with the unit enabled, `systemctl disable zimacube-fan-curve`
+still clears the stale symlink; should it refuse because the unit file is gone, remove
+`/etc/systemd/system/multi-user.target.wants/zimacube-fan-curve.service` by hand and reload.
+
 Leaving that unit disabled is fine — the controller then keeps whatever curve BIOS Setup
 configured, and the driver gives you readings plus on-demand manual control.
 
@@ -64,8 +81,8 @@ configured, and the driver gives you readings plus on-demand manual control.
 | attribute | meaning |
 |---|---|
 | `fan1_input`, `fan2_input` | CPU / system fan speed, RPM |
-| `pwm1`, `pwm2` | duty, 0–255, 1:1 with the EC's duty register |
-| `pwm[12]_enable` | 0 = full speed, 1 = manual, 2 = the EC's own curve |
+| `pwm1`, `pwm2` | duty, 0–255, rescaled to the EC register by `fullscale` (1:1 at the default 255) |
+| `pwm[12]_enable` | 0 = full speed, 1 = manual at the current duty, 2 = the EC's own curve |
 | `pwm[12]_auto_point1_temp` | curve start temperature |
 | `pwm[12]_auto_point2_temp` | full-speed temperature |
 | `pwm[12]_auto_point1_pwm` | duty at the start temperature |
@@ -76,6 +93,25 @@ configured, and the driver gives you readings plus on-demand manual control.
 
 The curve the EC runs is `duty = start_pwm + (temp − start_temp) × slope`, forced to 255 at
 `auto_point2_temp`, and slew-limited to one step per control tick.
+
+`pwm` is the hwmon 0–255 scale; what reaches the EC is `pwm × fullscale / 255`, where
+`fullscale` is a module parameter. At its default of 255 that is 1:1; set it to 122 and a
+full 255 lands on the value BIOS caps its own fields at. Values of 0 or above 255 are
+ignored — the duty register is 8-bit and a larger one would wrap.
+
+Writing `1` to `pwm[12]_enable` means "hold the speed the fan runs at now", so the driver has
+to know that speed, and refuses with `EIO` rather than guess:
+
+* the duty must come from a live read of the PWM register, or from a cached one that came
+  from a live read and is still inside the refresh window — a duty inferred from the mode
+  alone does not count;
+* a stopped fan reads back as 0, and manual mode never looks at temperature again, so the
+  value is floored at the channel's own start PWM — the duty the EC itself uses to get a
+  stopped fan turning. If that register is 0 too, the write is refused.
+
+The reason is written to the kernel log. Writing `pwm1`/`pwm2` instead sets the duty
+outright and switches the channel to manual on the way, with no floor applied — that value
+is yours, not a guess, so the driver does not second-guess it.
 
 `/sys/kernel/debug/zimacube_ec_fan/regs` dumps the decoded EC RAM with the curve's predicted
 duty next to the live one — the fastest way to check that the map applies to your board.
