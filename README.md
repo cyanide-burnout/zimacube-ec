@@ -32,8 +32,22 @@ That is the whole thing. DKMS keeps the module alive across kernel upgrades; wit
 module has to be rebuilt by hand after every one.
 
 `make dkms` is also the update path — edit the source and run it again, it rebuilds in place.
-It takes the version from `dkms.conf`, so bumping `PACKAGE_VERSION` there is enough to
-install alongside an older build.
+
+It works on exactly the version in `dkms.conf` and never touches any other, so bumping
+`PACKAGE_VERSION` installs the new build *alongside* the old one rather than replacing it.
+Both then stay registered, and with `AUTOINSTALL="yes"` both get rebuilt on every kernel
+upgrade, racing for the same module path. After a bump, clear the old one out:
+
+```sh
+sudo make dkms-purge
+sudo make dkms
+```
+
+Note that `make dkms-remove` cannot do this: it also reads the version from `dkms.conf`, so
+once the file says 0.4 it will remove 0.4, not the 0.3 you meant. Only `dkms-purge` walks
+every registered version. To drop one by hand:
+`sudo dkms remove -m zimacube-ec-fan -v 0.3 --all`. Check what is left with
+`dkms status -m zimacube-ec-fan`.
 
 | target | what it does |
 |---|---|
@@ -41,8 +55,8 @@ install alongside an older build.
 | `make reload` | reload the module and show the last kernel messages |
 | `make install` | plain install without DKMS — breaks on the next kernel upgrade |
 | `make install-support` | only the support files, no module |
-| `make dkms-remove` | remove this version |
-| `make dkms-purge` | remove every installed version, including leftovers |
+| `make dkms-remove` | remove the version currently named in `dkms.conf`, not whatever is installed |
+| `make dkms-purge` | remove every registered version — the one to use after a version bump |
 | `make uninstall` | remove the autoload rule, the apply script and the unit — keeps the curve config and the module. Disable the unit first, see below |
 
 The support files are an autoload rule in `/etc/modules-load.d`, the curve config at
