@@ -1,8 +1,8 @@
 # zimacube-ec-fan
 
 Linux hwmon driver for the ITE IT5570E embedded controller on IceWhale **ZimaCube** boards.
-Two independent fan channels, three temperatures, and the EC's own fan curve exposed as
-writable attributes.
+Two independent fan channels, three temperatures, the EC's own fan curve exposed as
+writable attributes, and the front power LED as a standard LED class device.
 
 Verified on: ZimaCube Pro, BIOS 5.24 (12/10/2025), Debian 13, kernel 6.12.
 
@@ -130,6 +130,36 @@ is yours, not a guess, so the driver does not second-guess it.
 `/sys/kernel/debug/zimacube_ec_fan/regs` dumps the decoded EC RAM with the curve's predicted
 duty next to the live one — the fastest way to check that the map applies to your board.
 
+## Power LED
+
+The vendor's ZimaCube Pro utility controls the front power LED through EC register `0xF8`.
+This driver uses that register and exposes the LED as
+`/sys/class/leds/zimacube::power`:
+
+| attribute | meaning |
+|---|---|
+| `brightness` | `0` = off, `1` = steady on; reads `1` while the LED blinks |
+| `trigger` | any kernel trigger — `timer`, `heartbeat`, `disk-activity`, … |
+| `hw_blink` | `none`, `slow`, `medium`, `fast` — the EC blinks the LED on its own |
+
+```sh
+echo heartbeat | sudo tee /sys/class/leds/zimacube::power/trigger
+echo slow      | sudo tee /sys/class/leds/zimacube::power/hw_blink
+echo 1         | sudo tee /sys/class/leds/zimacube::power/brightness
+```
+
+Kernel triggers blink in software, one EC write per edge. `hw_blink` costs nothing after the
+write, but its three rates are fixed by the EC and have not been timed, which is why they are
+not offered through the LED core's `blink_set`: that interface has to report the delays it
+actually applies. Writing `hw_blink` detaches any trigger first, and `none` leaves the LED
+steady on. Writing `brightness` ends a hardware blink.
+
+The LED is registered only on a verified ZimaCube Pro, and only if the register holds one of
+the five known states at load time. Otherwise the fans still bind and the kernel log says
+why the LED did not. On unload the LED is put back the way it was found. Other ZimaCube
+models drive their LED from a Super I/O GPIO rather than the EC, which this driver does not
+touch.
+
 ## Safety gates
 
 Binding is gated twice, because getting this wrong means writing duty values into registers
@@ -173,8 +203,8 @@ quiet down when it leaves. Compensate with a steeper `slope` rather than a lower
 
 ## Provenance
 
-This driver was written for interoperability: to make the fans of hardware its author owns
-controllable from Linux, where no such support existed.
+This driver was written for interoperability: to make the fans and power LED of hardware its
+author owns controllable from Linux, where no such support existed.
 
 What is published here is confined to that purpose: the driver itself, and the register
 offsets it cannot function without. No firmware is redistributed, nor any disassembly of it,

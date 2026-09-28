@@ -28,6 +28,10 @@
  * temperature while heating, 3 degC above while cooling, equal once settled. That
  * lag stacks with the slew limiter, so the fans are slow both to spin up and to
  * quiet down. Compensate with a steeper slope, not a lower start temperature.
+ *
+ * The same EC also drives the front power LED from EC[0xF8]: 0 = on, 1 = off,
+ * 2/4/8 = slow/medium/fast hardware blink. It is exposed through the LED class
+ * as zimacube::power.
  */
 
 #define pr_fmt(fmt)  KBUILD_MODNAME ": " fmt
@@ -42,6 +46,7 @@
 #include <linux/io.h>
 #include <linux/jiffies.h>
 #include <linux/kernel.h>
+#include <linux/leds.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
 #include <linux/seq_file.h>
@@ -84,6 +89,7 @@
 #define EC_SYS_RPM_LO      0x79
 #define EC_CPU_TEMP10_LO   0xa1  /* little-endian 16-bit, degC * 10 */
 #define EC_CPU_TEMP10_HI   0xa2
+#define EC_POWER_LED       0xf8  /* 0=on 1=off 2/4/8=blink slow/medium/fast */
 
 /*
  * Live PWM duty, reachable only through the Super I/O indirect window: the
@@ -98,6 +104,13 @@
 #define FAN_MODE_AUTO    2
 #define FAN_MODE_FULL    3
 /* mode 4 exists in BIOS Setup but the controller does not decode it — never write it */
+
+/* EC power LED states */
+#define LED_STATE_ON            0x00
+#define LED_STATE_OFF           0x01
+#define LED_STATE_BLINK_SLOW    0x02
+#define LED_STATE_BLINK_MEDIUM  0x04
+#define LED_STATE_BLINK_FAST    0x08
 
 /*
  * The BIOS Setup page caps every duty field at 122, but the EC applies the value
@@ -164,6 +177,9 @@ struct zc_data
   u8  full_scale;  /* duty value meaning 100 %, 0 if unknown */
   u8  temp_ctrl, temp_max, temp_board;
   u16 temp_cpu10;
+
+  struct led_classdev led;
+  u8  led_at_probe;  /* restored on unload */
 };
 
 static bool force;
@@ -787,6 +803,191 @@ static struct attribute *zc_curve_attrs[] =
 };
 ATTRIBUTE_GROUPS(zc_curve);
 
+/* --------------------------------------------------------------- power LED */
+
+static const struct
+{
+  u8 state;
+  const char *name;
+} led_blink_modes[] =
+{
+  { LED_STATE_ON,           "none"   },
+  { LED_STATE_BLINK_SLOW,   "slow"   },
+  { LED_STATE_BLINK_MEDIUM, "medium" },
+  { LED_STATE_BLINK_FAST,   "fast"   },
+};
+
+static const char *led_state_name(u8 state)
+{
+  switch (state)
+  {
+    case LED_STATE_ON:            return "on";
+    case LED_STATE_OFF:           return "off";
+    case LED_STATE_BLINK_SLOW:    return "blinking slow";
+    case LED_STATE_BLINK_MEDIUM:  return "blinking medium";
+    case LED_STATE_BLINK_FAST:    return "blinking fast";
+    default:                      return NULL;
+  }
+}
+
+static int zc_led_write(struct zc_data *state, u8 value)
+{
+  int result;
+
+  mutex_lock(&state->lock);
+  result = write_ec_reg(EC_POWER_LED, value);
+  mutex_unlock(&state->lock);
+  return result;
+}
+
+static int zc_led_read(struct zc_data *state, u8 *value)
+{
+  int result;
+
+  mutex_lock(&state->lock);
+  result = read_ec_reg(EC_POWER_LED, value);
+  mutex_unlock(&state->lock);
+  return result;
+}
+
+static int zc_led_set(struct led_classdev *led, enum led_brightness brightness)
+{
+  struct zc_data *state = container_of(led, struct zc_data, led);
+
+  return zc_led_write(state, brightness ? LED_STATE_ON : LED_STATE_OFF);
+}
+
+/* A blinking LED is lit as far as brightness is concerned; hw_blink tells them apart. */
+static enum led_brightness zc_led_get(struct led_classdev *led)
+{
+  struct zc_data *state = container_of(led, struct zc_data, led);
+  u8 value;
+  int result;
+
+  result = zc_led_read(state, &value);
+  if (result)
+    return result;
+  return (value == LED_STATE_OFF) ? LED_OFF : 1;
+}
+
+/*
+ * The EC blinks on its own at three fixed rates. Their periods have not been
+ * measured, so they cannot be offered through blink_set(), which has to report
+ * the delays it actually applies. They get a named attribute instead; software
+ * triggers (timer, heartbeat, ...) keep working through brightness.
+ */
+static ssize_t hw_blink_show(struct device *dev, struct device_attribute *attr,
+                             char *buf)
+{
+  struct led_classdev *led = dev_get_drvdata(dev);
+  struct zc_data *state    = container_of(led, struct zc_data, led);
+  u8 value;
+  int result, index;
+
+  result = zc_led_read(state, &value);
+  if (result)
+    return result;
+
+  if ((value == LED_STATE_OFF) || (value == LED_STATE_ON))
+    return sysfs_emit(buf, "none\n");
+  for (index = 0; index < ARRAY_SIZE(led_blink_modes); index++)
+    if (led_blink_modes[index].state == value)
+      return sysfs_emit(buf, "%s\n", led_blink_modes[index].name);
+  return sysfs_emit(buf, "unknown (0x%02x)\n", value);
+}
+
+static ssize_t hw_blink_store(struct device *dev, struct device_attribute *attr,
+                              const char *buf, size_t count)
+{
+  struct led_classdev *led = dev_get_drvdata(dev);
+  struct zc_data *state    = container_of(led, struct zc_data, led);
+  int index, result;
+
+  for (index = 0; index < ARRAY_SIZE(led_blink_modes); index++)
+    if (sysfs_streq(buf, led_blink_modes[index].name))
+      break;
+  if (index == ARRAY_SIZE(led_blink_modes))
+    return -EINVAL;
+
+  /* Serialize with the LED core's brightness and trigger sysfs writers. */
+  mutex_lock(&led->led_access);
+  /*
+   * A trigger would overwrite the blink on its next tick. Detaching it queues
+   * an asynchronous "off" for blocking LEDs, so wait for that to land before
+   * writing, or it would arrive after the blink and switch the LED off.
+   */
+  led_trigger_remove(led);
+  flush_work(&led->set_brightness_work);
+
+  result = zc_led_write(state, led_blink_modes[index].state);
+  if (!result)
+    led->brightness = 1;
+  mutex_unlock(&led->led_access);
+  return result ? result : count;
+}
+static DEVICE_ATTR_RW(hw_blink);
+
+static struct attribute *zc_led_attrs[] =
+{
+  &dev_attr_hw_blink.attr,
+  NULL
+};
+ATTRIBUTE_GROUPS(zc_led);
+
+/* Runs after the LED class device is gone, so no trigger can write behind it. */
+static void zc_led_restore(void *data)
+{
+  struct zc_data *state = data;
+
+  zc_led_write(state, state->led_at_probe);
+}
+
+/*
+ * The LED is an extra: a board where it cannot be verified still gets its fans,
+ * so every failure here is a warning, never a probe error.
+ */
+static void zc_led_probe(struct platform_device *pdev, struct zc_data *state)
+{
+  struct device *dev = &pdev->dev;
+  int result;
+
+  result = read_ec_reg(EC_POWER_LED, &state->led_at_probe);
+  if (result)
+  {
+    dev_warn(dev, "power LED: EC[0x%02x] read failed (%d), not registering it\n", EC_POWER_LED, result);
+    return;
+  }
+  if (!led_state_name(state->led_at_probe))
+  {
+    dev_warn(dev, "power LED: EC[0x%02x] = 0x%02x is not a known LED state, not registering it\n",
+             EC_POWER_LED, state->led_at_probe);
+    return;
+  }
+
+  /* devm actions run in reverse: registered first, this one runs after the LED is gone */
+  result = devm_add_action(dev, zc_led_restore, state);
+  if (result)
+    return;
+
+  state->led.name                    = "zimacube::power";
+  state->led.max_brightness          = 1;
+  state->led.brightness_set_blocking = zc_led_set;
+  state->led.brightness_get          = zc_led_get;
+  state->led.groups                  = zc_led_groups;
+  /* the core would switch it off on unregister; zc_led_restore puts it back instead */
+  state->led.flags                   = LED_RETAIN_AT_SHUTDOWN;
+
+  result = devm_led_classdev_register(dev, &state->led);
+  if (result)
+  {
+    devm_remove_action(dev, zc_led_restore, state);
+    dev_warn(dev, "power LED: registration failed (%d)\n", result);
+    return;
+  }
+
+  dev_info(dev, "power LED: %s\n", led_state_name(state->led_at_probe));
+}
+
 /* ------------------------------------------------------------------- debugfs */
 
 static struct dentry *zc_debugfs;
@@ -820,6 +1021,7 @@ static int zc_regs_show(struct seq_file *output, void *unused)
     read_ec_reg(index, &window[index]);
   read_ec_reg(0xa1, &window[0xa1]);
   read_ec_reg(0xa2, &window[0xa2]);
+  read_ec_reg(EC_POWER_LED, &window[EC_POWER_LED]);
 
   have_duty = (sio_ind_read_batch(dump_duty, duties, ARRAY_SIZE(dump_duty)) == 0);
 
@@ -888,6 +1090,8 @@ static int zc_regs_show(struct seq_file *output, void *unused)
 
   seq_printf(output, "\ntemps: ctrl(0x70)=%u C  max(0x71)=%u C  board(0x72)=%u C  cpu*10(0xA1)=%u\n",
              window[0x70], window[0x71], window[0x72], (window[0xa2] << 8) | window[0xa1]);
+  seq_printf(output, "power led 0x%02x = 0x%02x (%s)\n", EC_POWER_LED, window[EC_POWER_LED],
+             led_state_name(window[EC_POWER_LED]) ?: "unknown");
   return 0;
 }
 DEFINE_SHOW_ATTRIBUTE(zc_regs);
@@ -1160,6 +1364,12 @@ static int zc_probe(struct platform_device *pdev)
   debugfs_create_file("ec_raw", ZC_EC_RAW_MODE, zc_debugfs, state,
                       &zc_ec_raw_fops);
 
+  /* EC[0xF8] is verified on the Pro only; other boards drive the LED elsewhere */
+  if (dmi_first_match(zc_dmi_verified))
+    zc_led_probe(pdev, state);
+  else
+    dev_info(&pdev->dev, "power LED: not a verified board, not registering it\n");
+
   if (zc_update(state) == 0)
     dev_info(&pdev->dev,
              "CPU %d.%d C, board %d C | CPU fan %u RPM (%u%%, mode %u) | SYS fan %u RPM (%u%%, mode %u)%s\n",
@@ -1248,5 +1458,5 @@ static void __exit zc_exit(void)
 module_init(zc_init);
 module_exit(zc_exit);
 
-MODULE_DESCRIPTION("ZimaCube Pro 2 ITE IT5570E dual-fan hwmon driver");
+MODULE_DESCRIPTION("ZimaCube Pro 2 ITE IT5570E dual-fan hwmon and power LED driver");
 MODULE_LICENSE("GPL v2");
