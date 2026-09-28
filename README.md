@@ -132,9 +132,8 @@ duty next to the live one — the fastest way to check that the map applies to y
 
 ## Power LED
 
-The vendor's ZimaCube Pro utility controls the front power LED through EC register `0xF8`.
-This driver uses that register and exposes the LED as
-`/sys/class/leds/zimacube::power`:
+On ZimaCube Pro, the driver exposes the front power LED as
+`/sys/class/leds/zimacube::power`. This interface has been verified on the machine.
 
 | attribute | meaning |
 |---|---|
@@ -200,6 +199,8 @@ quiet down when it leaves. Compensate with a steeper `slope` rather than a lower
 * [passiveEndeavour/it5570-fan](https://github.com/passiveEndeavour/it5570-fan).
   Its Super I/O detection and indirect-window access patterns are correct and were the
   starting point here; only its register map does not apply to this board.
+* [IceWhaleTech/ZimaCube-PowerLED](https://github.com/IceWhaleTech/ZimaCube-PowerLED).
+  The vendor's Power LED utility provided the ZimaCube Pro LED control values.
 
 ## Provenance
 
