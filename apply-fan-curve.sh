@@ -25,7 +25,7 @@ find_hwmon() {
 
 hwmon=$(find_hwmon)
 if [ -z "$hwmon" ]; then
-  modprobe zimacube_ec_fan 2>/dev/null
+  modprobe zimacube_ec 2>/dev/null
   # the platform device and hwmon registration are not instantaneous
   attempt=0
   while [ $attempt -lt 20 ]; do
@@ -37,8 +37,8 @@ fi
 
 if [ -z "$hwmon" ]; then
   echo "zimacube_ec hwmon device not found." >&2
-  if ! lsmod | grep -q '^zimacube_ec_fan'; then
-    echo "  the zimacube_ec_fan module is not loaded, and modprobe did not find it." >&2
+  if ! lsmod | grep -q '^zimacube_ec'; then
+    echo "  the zimacube_ec module is not loaded, and modprobe did not find it." >&2
     echo "  install it first: make install   (or the dkms install steps)" >&2
   else
     echo "  the module is loaded but did not register hwmon -- check dmesg." >&2

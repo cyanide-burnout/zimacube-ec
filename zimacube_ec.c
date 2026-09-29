@@ -53,7 +53,7 @@
 #include <linux/uaccess.h>
 #include <linux/platform_device.h>
 
-#define DRVNAME  "zimacube_ec_fan"
+#define DRVNAME  "zimacube_ec"
 
 /* ---- Super I/O (chip detection + indirect register window) ---------------- */
 #define SIO_ADDR       0x4e
@@ -1106,7 +1106,7 @@ DEFINE_SHOW_ATTRIBUTE(zc_regs);
  * state, and there is no safe generic offset list to validate against, so it is
  * compiled out unless you ask for it:
  *
- *     make CFLAGS_zimacube_ec_fan.o=-DZC_ALLOW_EC_WRITE
+ *     make CFLAGS_zimacube_ec.o=-DZC_ALLOW_EC_WRITE
  *
  * It takes "<offset> <value>" in hex, is root-only and debugfs-only, and logs
  * every write.

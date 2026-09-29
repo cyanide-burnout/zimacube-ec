@@ -1,13 +1,13 @@
-# zimacube-ec-fan
+# zimacube-ec
 
-Linux hwmon driver for the ITE IT5570E embedded controller on IceWhale **ZimaCube** boards.
+Linux hwmon and LED driver for the ITE IT5570E embedded controller on IceWhale **ZimaCube** boards.
 Two independent fan channels, three temperatures, the EC's own fan curve exposed as
 writable attributes, and the front power LED as a standard LED class device.
 
 Verified on: ZimaCube Pro, BIOS 5.24 (12/10/2025), Debian 13, kernel 6.12.
 
 The register offsets and the behaviour of the controller's own fan curve are documented in
-the comments at the top of `zimacube_ec_fan.c`.
+the comments at the top of `zimacube_ec.c`.
 
 ## Why this exists
 
@@ -28,7 +28,7 @@ sudo make dkms
 sudo make reload
 ```
 
-That is the whole thing. DKMS keeps the module alive across kernel upgrades; without it the
+For a fresh installation, that is the whole thing. DKMS keeps the module alive across kernel upgrades; without it the
 module has to be rebuilt by hand after every one.
 
 `make dkms` is also the update path — edit the source and run it again, it rebuilds in place.
@@ -43,11 +43,28 @@ sudo make dkms-purge
 sudo make dkms
 ```
 
-Note that `make dkms-remove` cannot do this: it also reads the version from `dkms.conf`, so
-once the file says 0.4 it will remove 0.4, not the 0.3 you meant. Only `dkms-purge` walks
-every registered version. To drop one by hand:
-`sudo dkms remove -m zimacube-ec-fan -v 0.3 --all`. Check what is left with
-`dkms status -m zimacube-ec-fan`.
+Note that `make dkms-remove` reads the version from the current `dkms.conf`;
+it does not remove older versions. `dkms-purge` walks every registered version
+of the current package, `zimacube-ec`.
+
+### Upgrading from `zimacube-ec-fan`
+
+The old and new module names are different. Do not leave both modules loaded:
+they would expose the same EC and could both write to it. The hwmon name stays
+`zimacube_ec`, so consumers of hwmon do not need a sensor-name change.
+
+Stop `zimacube-sysfan.service` and `zimacube-fan-curve.service` if they are
+active. Unload `zimacube_ec_fan` before loading `zimacube_ec`. Install the new
+DKMS package, then remove the old `zimacube-ec-fan` DKMS registrations and
+`/etc/modules-load.d/zimacube-ec-fan.conf` before rebooting. The old package's
+versions are shown by `sudo dkms status -m zimacube-ec-fan`; remove each listed
+version with `sudo dkms remove -m zimacube-ec-fan -v VERSION --all`. The new
+package's autoload file is `/etc/modules-load.d/zimacube-ec.conf`. Restart the
+services after the new module is loaded. The fan daemons themselves keep their
+fan-specific names in [ZimaCubeFan](https://github.com/cyanide-burnout/ZimaCubeFan).
+
+Version `0.6` changes module and package naming; EC register behavior is
+unchanged. It has not yet been loaded on the Cube.
 
 | target | what it does |
 |---|---|
@@ -127,7 +144,7 @@ The reason is written to the kernel log. Writing `pwm1`/`pwm2` instead sets the 
 outright and switches the channel to manual on the way, with no floor applied — that value
 is yours, not a guess, so the driver does not second-guess it.
 
-`/sys/kernel/debug/zimacube_ec_fan/regs` dumps the decoded EC RAM with the curve's predicted
+`/sys/kernel/debug/zimacube_ec/regs` dumps the decoded EC RAM with the curve's predicted
 duty next to the live one — the fastest way to check that the map applies to your board.
 
 ## Power LED
@@ -177,7 +194,7 @@ Raw EC writes through `debugfs/ec_raw` are **compiled out by default** — a loa
 pointed at a controller that also owns thermal and power state. Enable deliberately:
 
 ```sh
-make CFLAGS_zimacube_ec_fan.o=-DZC_ALLOW_EC_WRITE
+make CFLAGS_zimacube_ec.o=-DZC_ALLOW_EC_WRITE
 ```
 
 ## Two things worth knowing
